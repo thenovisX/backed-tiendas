@@ -11,7 +11,8 @@ Backend reutilizable para webs de tienda + clases/talleres + galería, pensado p
 - **Clases**: en grupo con plazas por horario, **clases semanales** (todas las semanas de un curso a la vez) y solicitudes de clase privada.
 - **Galería** con validación de formato, peso y proporción de las fotos.
 - **Panel `/admin`**: pedidos, productos, clases y horarios, reservas, galería, clientes y **Ajustes** (nombre de la tienda, datos de contacto, Stripe, Packlink, envíos y emails). Funciona en el móvil y se puede **instalar como app** (PWA).
-- Plantilla de frontend (`plantilla-web/`): cesta (`cart.js` + `cart.css`), página de gracias y un ejemplo de cómo pintar productos, galería, clases y datos de contacto.
+- Plantilla de frontend (`plantilla-web/`): cesta (`cart.js` + `cart.css`), página de gracias, aviso de cookies (`consent.js`), página «Mis datos» (`mis-datos.js`) y un ejemplo de cómo pintar productos, galería, clases y datos de contacto.
+- RGPD: casillas de consentimiento registradas, perfiles de cliente solo con permiso, lista de comunicaciones exportable, derecho de supresión y exportación, datos legales del titular y ID de Google Analytics en Panel → Ajustes. Las páginas legales (aviso legal, privacidad, cookies, condiciones, mis datos) están en Charria (`aviso-legal.html`, `privacidad.html`, `cookies.html`, `condiciones.html`, `mis-datos.html`): cópialas y adapta los textos al negocio. `consent.js` necesita el estilo `.consent`/`.consent-prefs` y `ICONS.close` de Charria (`style.css`, `script.js`).
 - Tests de extremo a extremo (57 comprobaciones) con un Stripe simulado.
 
 La documentación técnica completa (todas las rutas de la API, base de datos, seguridad, variables de entorno) está en **[docs/REFERENCIA.md](docs/REFERENCIA.md)**.
@@ -105,7 +106,7 @@ Reglas para que no se separen:
 - Lo que sea solo de Charria (textos, diseño de la web) no pasa por aquí: el script solo mira `admin/`, `api/`, `backend/`, `uploads/`, `.htaccess`, `.gitignore`, `cart.js` y `gracias.js`.
 - Si una web nueva mejora el backend, se pasa aquí y, si sirve, también a Charria.
 
-**Estado actual**: incluye Charria hasta `e65694a` (rama de Hostinger con los PR #7 “clases semanales + datos de la web” y #9 “panel en el móvil / app” ya fusionados).
+**Estado actual**: incluye Charria hasta `0a20099` (rama de Hostinger con los PR #7, #9 y #11, más el PR #12 “RGPD y cookies”).
 
 ## Pendiente conocido
 
