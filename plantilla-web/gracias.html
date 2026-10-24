@@ -1,0 +1,28 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="robots" content="noindex">
+  <title>Gracias</title>
+  <!-- Copia aquí la cabecera, fuentes y style.css de tu web -->
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <!-- Stripe vuelve aquí tras pagar (https://tudominio.com/gracias.html?session_id=…).
+       gracias.js solo necesita los cuatro elementos con data-thanks-*. -->
+  <main>
+    <section data-thanks>
+      <p data-thanks-eyebrow>Confirmando el pago</p>
+      <h1>Gracias</h1>
+      <p data-thanks-text>Estamos comprobando el pago con Stripe. Solo tarda unos segundos…</p>
+      <p data-thanks-ref hidden></p>
+      <a href="productos.html" data-thanks-cta>Seguir mirando</a>
+    </section>
+  </main>
+
+  <!-- cart.js va antes para que gracias.js pueda vaciar la cesta -->
+  <script src="cart.js"></script>
+  <script src="gracias.js"></script>
+</body>
+</html>
