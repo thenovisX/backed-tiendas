@@ -2,6 +2,7 @@
 declare(strict_types=1);
 
 use App\Controllers\Admin\ClassAdminController as Classes;
+use App\Controllers\Admin\CustomerAdminController as Customers;
 use App\Controllers\Admin\GalleryAdminController as Gallery;
 use App\Controllers\Admin\OrderAdminController as Orders;
 use App\Controllers\Admin\ProductAdminController as Products;
@@ -9,6 +10,7 @@ use App\Controllers\Admin\SettingsController;
 use App\Controllers\AuthController;
 use App\Controllers\BookingController;
 use App\Controllers\CheckoutController;
+use App\Controllers\PrivacyController;
 use App\Controllers\PublicController;
 use App\Controllers\WebhookController;
 use App\Http\Router;
@@ -30,6 +32,9 @@ return static function (Router $r): void {
     $r->post('/bookings', [BookingController::class, 'createGroup']);
     $r->post('/bookings/private', [BookingController::class, 'createPrivate']);
     $r->post('/contact', [PublicController::class, 'contact']);
+    $r->post('/privacy/request', [PrivacyController::class, 'request']);
+    $r->post('/privacy/confirm', [PrivacyController::class, 'confirm']);
+    $r->post('/privacy/unsubscribe', [PrivacyController::class, 'unsubscribeLink']);
     $r->post('/webhooks/stripe', [WebhookController::class, 'stripe']);
 
     // ---------- Instalación y sesión ----------
@@ -81,7 +86,16 @@ return static function (Router $r): void {
     $r->get('/admin/orders/{id}', [Orders::class, 'show'], $admin);
     $r->patch('/admin/orders/{id}', [Orders::class, 'update'], $admin);
     $r->post('/admin/orders/{id}/packlink', [Orders::class, 'packlink'], $admin);
-    $r->get('/admin/customers', [Orders::class, 'customers'], $admin);
+
+    $r->get('/admin/customers', [Customers::class, 'index'], $admin);
+    $r->post('/admin/customers/erase', [Customers::class, 'eraseByEmail'], $admin);
+    $r->post('/admin/customers/purge-legacy', [Customers::class, 'purgeLegacy'], $admin);
+    $r->get('/admin/customers/{id}', [Customers::class, 'show'], $admin);
+    $r->patch('/admin/customers/{id}', [Customers::class, 'update'], $admin);
+    $r->delete('/admin/customers/{id}', [Customers::class, 'destroy'], $admin);
+    $r->get('/admin/customers/{id}/export', [Customers::class, 'export'], $admin);
+    $r->get('/admin/marketing', [Customers::class, 'marketing'], $admin);
+    $r->get('/admin/privacy-requests', [Customers::class, 'requests'], $admin);
 
     $r->get('/admin/settings', [SettingsController::class, 'show'], $admin);
     $r->put('/admin/settings', [SettingsController::class, 'update'], $admin);
