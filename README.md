@@ -105,7 +105,7 @@ Reglas para que no se separen:
 - Lo que sea solo de Charria (textos, diseño de la web) no pasa por aquí: el script solo mira `admin/`, `api/`, `backend/`, `uploads/`, `.htaccess`, `.gitignore`, `cart.js` y `gracias.js`.
 - Si una web nueva mejora el backend, se pasa aquí y, si sirve, también a Charria.
 
-**Estado actual**: incluye Charria hasta `102e06e` (PR #9 “panel en el móvil / app”, que ya lleva dentro el PR #7 “clases semanales + datos de la web”). Esos PRs aún no estaban fusionados en Charria; si cambian antes de fusionarse, basta con volver a ejecutar el script.
+**Estado actual**: incluye Charria hasta `e65694a` (rama de Hostinger con los PR #7 “clases semanales + datos de la web” y #9 “panel en el móvil / app” ya fusionados).
 
 ## Pendiente conocido
 
