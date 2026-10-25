@@ -7,6 +7,7 @@ use App\Http\HttpError;
 use App\Http\Request;
 use App\Http\Response;
 use App\Services\AppSettings;
+use App\Services\ImageProcessor;
 use App\Services\Packlink;
 use App\Services\Stripe;
 
@@ -27,6 +28,22 @@ final class SettingsController
             throw HttpError::validation(['values' => 'Formato no válido']);
         }
         AppSettings::save($values, $clear);
+        return Response::json(AppSettings::forPanel());
+    }
+
+    /** POST /admin/settings/studio-image (multipart: image, alt, crop=1) — foto de la sección «Sobre nosotros» de la portada */
+    public function studioImage(Request $r): Response
+    {
+        $alt = trim((string) ($r->post['alt'] ?? '')) ?: 'Nuestro taller';
+        $image = ImageProcessor::store($r->files['image'] ?? null, 'site', mb_substr($alt, 0, 255), filter_var($r->post['crop'] ?? false, FILTER_VALIDATE_BOOLEAN));
+        AppSettings::setStudioImage((int) $image['id']);
+        return Response::json(AppSettings::forPanel());
+    }
+
+    /** DELETE /admin/settings/studio-image — vuelve a la foto de ejemplo */
+    public function deleteStudioImage(Request $r): Response
+    {
+        AppSettings::setStudioImage(null);
         return Response::json(AppSettings::forPanel());
     }
 
