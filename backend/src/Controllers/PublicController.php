@@ -11,6 +11,7 @@ use App\Services\Catalog;
 use App\Services\AppSettings;
 use App\Services\Installer;
 use App\Services\Mailer;
+use App\Services\Messages;
 use App\Services\Packlink;
 use App\Services\Pricing;
 use App\Services\RateLimiter;
@@ -75,7 +76,10 @@ final class PublicController
         return Response::json(array_map([Catalog::class, 'galleryItem'], $rows));
     }
 
-    /** GET /classes → clases en grupo con sus próximos horarios y modalidades privadas */
+    /**
+     * GET /classes → clases en grupo con sus próximos horarios y modalidades privadas.
+     * online_payment: Stripe está listo; cada clase dice si admite pagar en el taller (pay_in_person).
+     */
     public function classes(Request $r): Response
     {
         $rows = Database::get()->all('SELECT * FROM classes WHERE is_active = 1 ORDER BY sort_order, id');
@@ -83,6 +87,7 @@ final class PublicController
         return Response::json([
             'group' => array_values(array_filter($classes, static fn ($c) => $c['kind'] === 'group')),
             'private' => array_values(array_filter($classes, static fn ($c) => $c['kind'] === 'private')),
+            'online_payment' => Stripe::isConfigured(),
         ]);
     }
 
@@ -107,7 +112,8 @@ final class PublicController
             $v->addError('consents.privacy', 'Para enviar el mensaje tienes que aceptar la política de privacidad');
         }
         $v->check();
-        Mailer::admin("Web · $reason · $name", "$message\n\n— $name <$email>");
+        Messages::record(Messages::typeForReason($reason), $reason, ['name' => $name, 'email' => $email], $message);
+        Mailer::admin("Web · $reason · $name", "$message\n\n— $name <$email>\n\nLo tienes también en el panel → Mensajes.");
         return Response::created(['sent' => true]);
     }
 }

@@ -29,6 +29,7 @@ final class Privacy
         $customer = $db->one('SELECT * FROM customers WHERE email = ?', [$email]);
         $orders = $db->all('SELECT * FROM orders WHERE customer_email = ? ORDER BY created_at', [$email]);
         $bookings = $db->all('SELECT * FROM bookings WHERE customer_email = ? ORDER BY created_at', [$email]);
+        $messages = $db->all('SELECT * FROM messages WHERE email = ? ORDER BY created_at', [$email]);
         return [
             'generated_at' => date('c'),
             'email' => $email,
@@ -53,6 +54,10 @@ final class Privacy
                 'name' => $b['customer_name'], 'email' => $b['customer_email'], 'phone' => $b['customer_phone'],
                 'notes' => (string) $b['notes'], 'total_eur' => $b['total_cents'] / 100, 'created_at' => $b['created_at'],
             ], $bookings),
+            'messages' => array_map(static fn ($m) => [
+                'subject' => $m['subject'], 'name' => $m['name'], 'email' => $m['email'], 'phone' => $m['phone'],
+                'message' => $m['body'], 'created_at' => $m['created_at'],
+            ], $messages),
             'consents' => Consents::history($email),
         ];
     }
@@ -73,6 +78,7 @@ final class Privacy
         return $db->transaction(static function (Database $db) use ($email) {
             $now = date('Y-m-d H:i:s');
             $profiles = $db->exec('DELETE FROM customers WHERE email = ?', [$email]);
+            $messages = $db->exec('DELETE FROM messages WHERE email = ?', [$email]);
 
             // Pedidos y reservas pagados: se conservan bloqueados (sin teléfono ni notas)
             $keptOrders = $db->exec(
@@ -85,7 +91,8 @@ final class Privacy
                  WHERE customer_email = ? AND status = 'confirmed' AND paid_at IS NOT NULL",
                 [$now, $email]
             );
-            // Lo que no se llegó a pagar no hace falta para nada: se anonimiza
+            // Lo que no se llegó a pagar no hace falta para nada: se anonimiza y, si aún estaba
+            // en pie (solicitud privada o plaza para pagar en el taller), se cancela y libera la plaza
             $anonOrders = $db->exec(
                 "UPDATE orders SET customer_name = ?, customer_email = '', customer_phone = '', ship_street = '', ship_city = '',
                    ship_postal_code = '', privacy_blocked_at = COALESCE(privacy_blocked_at, ?)
@@ -94,7 +101,7 @@ final class Privacy
             );
             $anonBookings = $db->exec(
                 "UPDATE bookings SET customer_name = ?, customer_email = '', customer_phone = '', notes = NULL,
-                   status = IF(status = 'requested', 'cancelled', status), privacy_blocked_at = COALESCE(privacy_blocked_at, ?)
+                   status = IF(status IN ('requested','confirmed'), 'cancelled', status), privacy_blocked_at = COALESCE(privacy_blocked_at, ?)
                  WHERE customer_email = ? AND NOT (status = 'confirmed' AND paid_at IS NOT NULL)",
                 [self::ANON, $now, $email]
             );
@@ -105,6 +112,7 @@ final class Privacy
 
             return [
                 'profile_deleted' => $profiles > 0,
+                'messages_deleted' => $messages,
                 'orders_kept' => $keptOrders,
                 'bookings_kept' => $keptBookings,
                 'orders_anonymized' => $anonOrders,
@@ -160,6 +168,8 @@ final class Privacy
             [self::ANON]
         );
         $db->exec("DELETE FROM privacy_requests WHERE status = 'pending' AND expires_at < NOW() - INTERVAL 30 DAY");
+        $days = Messages::RETENTION_DAYS;
+        $db->exec("DELETE FROM messages WHERE created_at < NOW() - INTERVAL $days DAY");
         return ['orders' => $orders, 'bookings' => $bookings];
     }
 }

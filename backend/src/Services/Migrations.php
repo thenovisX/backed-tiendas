@@ -19,6 +19,10 @@ final class Migrations
     private const STEPS = [
         1 => 'privacy',
         2 => 'productDetails',
+        3 => 'messages',
+        4 => 'payInPerson',
+        5 => 'classPayments',
+        6 => 'bookingCalendar',
     ];
 
     public static function latest(): int
@@ -31,7 +35,7 @@ final class Migrations
     {
         $db = Database::get();
         try {
-            $current = (int) $db->value('SELECT MAX(version) FROM schema_migrations');
+            $applied = array_map('intval', array_column($db->all('SELECT version FROM schema_migrations'), 'version'));
         } catch (\PDOException $e) {
             if (($e->errorInfo[0] ?? '') !== '42S02') {
                 throw $e;
@@ -40,10 +44,11 @@ final class Migrations
                 return; // aún sin instalar: lo hará el instalador con schema.sql
             }
             self::createTable();
-            $current = 0;
+            $applied = [];
         }
+        // Se mira cada paso (no solo el mayor): así da igual en qué orden se fusionen las ramas que añaden pasos
         foreach (self::STEPS as $version => $method) {
-            if ($version <= $current) {
+            if (in_array($version, $applied, true)) {
                 continue;
             }
             self::$method($db);
@@ -117,13 +122,7 @@ final class Migrations
             $db->pdo()->exec('ALTER TABLE orders ADD KEY idx_orders_email (customer_email)');
         }
 
-        // Tablas nuevas: mismas definiciones que en schema.sql
-        $sql = file_get_contents(BACKEND_DIR . '/database/schema.sql');
-        foreach (['consents', 'privacy_requests'] as $table) {
-            if (preg_match('/CREATE TABLE IF NOT EXISTS ' . $table . ' \(.*?\) ENGINE=[^;]+;/s', $sql, $m)) {
-                $db->pdo()->exec(rtrim($m[0], ';'));
-            }
-        }
+        self::createTables($db, ['consents', 'privacy_requests']);
         // Los clientes que ya existían se crearon sin pedir permiso: quedan sin perfil
         // (has_profile = 0) y el panel avisa para que se puedan borrar.
     }
@@ -135,5 +134,83 @@ final class Migrations
         self::addColumn($db, 'products', 'material', "VARCHAR(160) NOT NULL DEFAULT '' AFTER dimensions");
         self::addColumn($db, 'products', 'care', 'TEXT NULL AFTER material');
         self::addColumn($db, 'products', 'specs', 'TEXT NULL AFTER care');
+    }
+
+    /**
+     * 3 · Bandeja de Mensajes: contacto, encargos y clases privadas. Las solicitudes
+     * de clase privada que ya había se copian (leídas si ya no están pendientes).
+     */
+    private static function messages(Database $db): void
+    {
+        self::createTables($db, ['messages']);
+        $db->exec(
+            "INSERT INTO messages (type, subject, name, email, phone, body, booking_id, read_at, handled_at, created_at)
+             SELECT 'private_class', b.class_title, b.customer_name, b.customer_email, b.customer_phone,
+                    CONCAT('Fecha preferida: ', COALESCE(b.preferred_date, '—'), ' (', COALESCE(b.preferred_slot, '—'), ')',
+                           IF(COALESCE(b.notes, '') = '', '', CONCAT('\n\n', b.notes))),
+                    b.id, IF(b.status = 'requested', NULL, b.created_at), IF(b.status = 'requested', NULL, b.created_at), b.created_at
+             FROM bookings b
+             WHERE b.session_id IS NULL AND b.preferred_date IS NOT NULL AND b.customer_email <> ''
+               AND NOT EXISTS (SELECT 1 FROM messages m WHERE m.booking_id = b.id)"
+        );
+    }
+
+    /**
+     * 4 · Pagar en el taller: cada clase dice si lo admite y cada reserva guarda
+     * cómo se paga. Las clases privadas siempre se han cobrado en el estudio.
+     */
+    private static function payInPerson(Database $db): void
+    {
+        self::addColumn($db, 'classes', 'pay_in_person', 'TINYINT(1) NOT NULL DEFAULT 1 AFTER capacity');
+        if (!self::hasColumn($db, 'bookings', 'payment_method')) {
+            self::addColumn($db, 'bookings', 'payment_method', "ENUM('online','in_person') NOT NULL DEFAULT 'online' AFTER total_cents");
+            $db->exec("UPDATE bookings SET payment_method = 'in_person' WHERE preferred_date IS NOT NULL AND stripe_session_id IS NULL");
+        }
+    }
+
+    /**
+     * 5 · Formas de pago de las clases: pago único online, suscripción mensual y pagar
+     * en el taller se activan por separado en cada clase. Las reservas guardan los datos
+     * de la suscripción de Stripe para reflejar si la cuota del mes está pagada.
+     */
+    private static function classPayments(Database $db): void
+    {
+        self::addColumn($db, 'classes', 'pay_online', 'TINYINT(1) NOT NULL DEFAULT 1 AFTER pay_in_person');
+        self::addColumn($db, 'classes', 'pay_subscription', 'TINYINT(1) NOT NULL DEFAULT 0 AFTER pay_online');
+        self::addColumn($db, 'classes', 'monthly_price_cents', 'INT UNSIGNED NULL AFTER pay_subscription');
+        $type = (string) $db->value(
+            "SELECT COLUMN_TYPE FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'bookings' AND COLUMN_NAME = 'payment_method'"
+        );
+        if (!str_contains($type, 'subscription')) {
+            $db->pdo()->exec("ALTER TABLE bookings MODIFY COLUMN payment_method ENUM('online','in_person','subscription') NOT NULL DEFAULT 'online'");
+        }
+        self::addColumn($db, 'bookings', 'stripe_subscription_id', 'VARCHAR(255) NULL AFTER stripe_session_id');
+        self::addColumn($db, 'bookings', 'subscription_status', "VARCHAR(20) NOT NULL DEFAULT '' AFTER stripe_subscription_id");
+        self::addColumn($db, 'bookings', 'paid_until', 'DATETIME NULL AFTER subscription_status');
+        if (!$db->value("SHOW INDEX FROM bookings WHERE Key_name = 'idx_bookings_subscription'")) {
+            $db->pdo()->exec('ALTER TABLE bookings ADD KEY idx_bookings_subscription (stripe_subscription_id)');
+        }
+    }
+
+    /**
+     * 6 · Calendario de reservas: tipo de cobro (pago único o suscripción mensual),
+     * origen (web o añadida a mano) y fecha del último aviso de impago.
+     */
+    private static function bookingCalendar(Database $db): void
+    {
+        self::addColumn($db, 'bookings', 'billing_type', "ENUM('single','subscription') NOT NULL DEFAULT 'single' AFTER payment_method");
+        self::addColumn($db, 'bookings', 'source', "ENUM('web','manual') NOT NULL DEFAULT 'web' AFTER billing_type");
+        self::addColumn($db, 'bookings', 'payment_alert_at', 'DATETIME NULL AFTER paid_at');
+    }
+
+    /** Crea tablas nuevas con la misma definición que tienen en schema.sql. */
+    private static function createTables(Database $db, array $tables): void
+    {
+        $sql = file_get_contents(BACKEND_DIR . '/database/schema.sql');
+        foreach ($tables as $table) {
+            if (preg_match('/CREATE TABLE IF NOT EXISTS ' . $table . ' \(.*?\) ENGINE=[^;]+;/s', $sql, $m)) {
+                $db->pdo()->exec(rtrim($m[0], ';'));
+            }
+        }
     }
 }

@@ -10,7 +10,9 @@ use App\Http\Response;
 use App\Services\Catalog;
 use App\Services\Consents;
 use App\Services\Customers;
+use App\Services\Fulfillment;
 use App\Services\Mailer;
+use App\Services\Messages;
 use App\Services\RateLimiter;
 use App\Services\Settings;
 use App\Services\Stripe;
@@ -20,19 +22,30 @@ use App\Validator;
  * Reservas públicas.
  * - Clases en grupo: se reservan plazas de un horario concreto y se pagan con Stripe.
  *   Las plazas quedan retenidas mientras se paga (CHECKOUT_HOLD_MINUTES).
+ *   Cada clase activa por separado: pago único online (pay_online), suscripción mensual
+ *   de Stripe (pay_subscription, cuota monthly_price_cents) y pagar en el taller.
+ *   Si la clase lo admite (pay_in_person) se puede elegir pagar en el taller: la
+ *   reserva queda confirmada sin caducidad y el panel la marca como pagada al cobrarla.
  * - Clases privadas: se envía una solicitud (fecha y franja preferidas) y el estudio
  *   la confirma desde el panel.
  */
 final class BookingController
 {
-    /** POST /bookings { session_id, seats, customer: {name, email, phone}, consents: {terms, marketing, profile} } */
+    /** POST /bookings { session_id, seats, payment_method: online|subscription|in_person, customer: {name, email, phone}, consents: {terms, marketing, profile} } */
     public function createGroup(Request $r): Response
     {
-        if (!Stripe::isConfigured()) {
+        $v = new Validator($r->body());
+        $method = $v->enum('payment_method', ['online', 'subscription', 'in_person']) ?? 'online';
+        $inPerson = $method === 'in_person';
+        $subscription = $method === 'subscription';
+        if (!$inPerson && !Stripe::isConfigured()) {
             throw new HttpError(503, 'payments_unavailable', 'Las reservas online aún no están activas. Escríbenos para reservar.');
         }
         RateLimiter::hit('booking:' . $r->ip, 15, 600);
-        $v = new Validator($r->body());
+        if ($inPerson) {
+            // Sin pago no hay nada que frene a quien aparta plazas por diversión
+            RateLimiter::hit('booking-in-person:' . $r->ip, 5, 3600);
+        }
         $sessionId = $v->int('session_id', true, 1);
         $seats = $v->int('seats', true, 1, 10);
         $customer = Customers::validate($v);
@@ -41,14 +54,24 @@ final class BookingController
 
         $db = Database::get();
         $hold = Settings::holdMinutes();
-        $booking = $db->transaction(static function (Database $db) use ($sessionId, $seats, $customer, $hold, $consents, $r) {
+        $booking = $db->transaction(static function (Database $db) use ($sessionId, $seats, $customer, $hold, $consents, $r, $inPerson, $subscription, $method) {
             // Bloquea el horario para que dos personas no se lleven la última plaza a la vez
             $session = $db->one('SELECT * FROM class_sessions WHERE id = ? FOR UPDATE', [$sessionId]);
             $class = $session ? $db->one("SELECT * FROM classes WHERE id = ? AND kind = 'group' AND is_active = 1", [$session['class_id']]) : null;
             if (!$session || !$class || $session['is_cancelled'] || strtotime($session['starts_at']) <= time()) {
                 throw HttpError::notFound('Este horario ya no está disponible');
             }
+            $allowed = match ($method) {
+                'in_person' => $class['pay_in_person'],
+                'subscription' => $class['pay_subscription'] && (int) $class['monthly_price_cents'] > 0,
+                default => $class['pay_online'],
+            };
+            if (!$allowed) {
+                throw HttpError::validation(['payment_method' => 'Esta forma de pago no está disponible para esta clase']);
+            }
             $info = Catalog::session($session, $class, Catalog::seatsTaken([$session['id']]));
+            // La suscripción cobra la cuota mensual de la clase; lo demás, el precio de este horario
+            $unit = $subscription ? (int) $class['monthly_price_cents'] : $info['price_cents'];
             if ($info['seats_left'] < $seats) {
                 throw new HttpError(409, 'not_enough_seats', $info['seats_left']
                     ? "Solo quedan {$info['seats_left']} plazas en este horario"
@@ -67,24 +90,37 @@ final class BookingController
                 'class_title' => $class['title'],
                 'starts_at' => $session['starts_at'],
                 'seats' => $seats,
-                'unit_price_cents' => $info['price_cents'],
-                'total_cents' => $info['price_cents'] * $seats,
-                'status' => 'pending_payment',
-                'expires_at' => date('Y-m-d H:i:s', time() + $hold * 60),
+                'unit_price_cents' => $unit,
+                'total_cents' => $unit * $seats,
+                'payment_method' => $method,
+                // En el taller la plaza queda guardada ya; online, solo mientras se paga
+                'status' => $inPerson ? 'confirmed' : 'pending_payment',
+                'expires_at' => $inPerson ? null : date('Y-m-d H:i:s', time() + $hold * 60),
             ]);
             Consents::recordAll($customer['email'], $consents, 'booking', $r, ['customer_id' => $customerId, 'booking_id' => $id]);
-            return ['id' => $id, 'reference' => $reference, 'class' => $class, 'session' => $session, 'price' => $info['price_cents']];
+            return ['id' => $id, 'reference' => $reference, 'class' => $class, 'session' => $session, 'price' => $unit];
         });
+
+        if ($inPerson) {
+            Fulfillment::bookingConfirmedEmails($db->one('SELECT * FROM bookings WHERE id = ?', [$booking['id']]));
+            return Response::created([
+                'reference' => $booking['reference'],
+                'total_cents' => $booking['price'] * $seats,
+                'status' => 'confirmed',
+                'payment_method' => 'in_person',
+            ]);
+        }
 
         $base = Settings::appUrl();
         $when = date('d/m/Y H:i', strtotime($booking['session']['starts_at']));
         try {
             $stripe = Stripe::createCheckoutSession([
                 'type' => 'booking',
+                'subscription' => $subscription,
                 'reference' => $booking['reference'],
                 'email' => $customer['email'],
                 'lines' => [[
-                    'name' => "{$booking['class']['title']} · $when",
+                    'name' => $subscription ? "{$booking['class']['title']} · cuota mensual (desde $when)" : "{$booking['class']['title']} · $when",
                     'unit_amount' => $booking['price'],
                     'quantity' => $seats,
                 ]],
@@ -101,6 +137,7 @@ final class BookingController
         return Response::created([
             'reference' => $booking['reference'],
             'total_cents' => $booking['price'] * $seats,
+            'payment_method' => $method,
             'checkout_url' => $stripe['url'],
         ]);
     }
@@ -139,17 +176,20 @@ final class BookingController
             'seats' => 1,
             'unit_price_cents' => $class['price_cents'],
             'total_cents' => $class['price_cents'],
+            'payment_method' => 'in_person',
             'status' => 'requested',
             'preferred_date' => $date,
             'preferred_slot' => $slot,
             'notes' => $notes,
         ]);
         Consents::recordAll($customer['email'], $consents, 'private_booking', $r, ['customer_id' => $customerId, 'booking_id' => $id]);
+        Messages::record('private_class', $class['title'], $customer,
+            "Fecha preferida: $date ($slot)" . ($notes ? "\n\n$notes" : ''), $id);
         Mailer::admin("Solicitud de clase privada $reference",
             "{$class['title']} · " . Mailer::money((int) $class['price_cents']) . "\nFecha preferida: $date ($slot)\n"
             . "Cliente: {$customer['name']} <{$customer['email']}> {$customer['phone']}\n\n" . ($notes ?? ''));
         Mailer::send($customer['email'], 'Hemos recibido tu solicitud · ' . Settings::siteName(),
-            "Hola {$customer['name']},\n\nGracias por tu interés en la clase privada ({$class['title']}).\nTe escribiremos en menos de 24 h para confirmar la fecha.\n\n" . Settings::siteName());
+            "Hola {$customer['name']},\n\nGracias por tu interés en la clase privada ({$class['title']}).\nTe escribiremos en menos de 24 h para confirmar la fecha.\nLa clase se paga en el taller, en efectivo, con tarjeta o por Bizum.\n\n" . Settings::siteName());
 
         return Response::created(['reference' => $reference, 'status' => 'requested']);
     }

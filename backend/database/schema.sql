@@ -150,6 +150,10 @@ CREATE TABLE IF NOT EXISTS classes (
   duration_minutes SMALLINT UNSIGNED NOT NULL DEFAULT 120,
   price_cents      INT UNSIGNED NOT NULL,
   capacity         SMALLINT UNSIGNED NOT NULL DEFAULT 6,
+  pay_in_person    TINYINT(1)   NOT NULL DEFAULT 1,  -- se puede reservar y pagar en el taller
+  pay_online       TINYINT(1)   NOT NULL DEFAULT 1,  -- se puede pagar ya, online, un pago único (Stripe)
+  pay_subscription TINYINT(1)   NOT NULL DEFAULT 0,  -- se puede pagar con suscripción mensual online (Stripe)
+  monthly_price_cents INT UNSIGNED NULL,             -- cuota mensual por plaza de la suscripción
   image_id         INT UNSIGNED NULL,
   is_active        TINYINT(1)   NOT NULL DEFAULT 1,
   sort_order       INT          NOT NULL DEFAULT 0,
@@ -191,13 +195,20 @@ CREATE TABLE IF NOT EXISTS bookings (
   seats             SMALLINT UNSIGNED NOT NULL DEFAULT 1,
   unit_price_cents  INT UNSIGNED NOT NULL DEFAULT 0,
   total_cents       INT UNSIGNED NOT NULL DEFAULT 0,
+  payment_method    ENUM('online','in_person','subscription') NOT NULL DEFAULT 'online',  -- in_person: confirmada sin pagar; paid_at al cobrarla en el taller · subscription: cuota mensual de Stripe
+  billing_type      ENUM('single','subscription') NOT NULL DEFAULT 'single',  -- subscription: cuota mensual, se repite cada semana en el calendario hasta cancelarla
+  source            ENUM('web','manual') NOT NULL DEFAULT 'web',  -- manual: añadida a mano desde el calendario del panel
   status            ENUM('requested','pending_payment','confirmed','cancelled') NOT NULL,
   preferred_date    DATE         NULL,  -- solo clases privadas
   preferred_slot    VARCHAR(40)  NOT NULL DEFAULT '',
   notes             TEXT         NULL,
   stripe_session_id VARCHAR(255) NULL,
+  stripe_subscription_id VARCHAR(255) NULL,  -- solo suscripciones
+  subscription_status VARCHAR(20) NOT NULL DEFAULT '',  -- active | past_due | canceled (solo suscripciones)
+  paid_until        DATETIME     NULL,  -- fin del periodo mensual ya pagado (suscripciones)
   expires_at        DATETIME     NULL,  -- fin de la retención de plazas mientras se paga
-  paid_at           DATETIME     NULL,
+  paid_at           DATETIME     NULL,  -- en una suscripción, la fecha del último cobro
+  payment_alert_at  DATETIME     NULL,  -- último aviso por email de impago
   privacy_blocked_at DATETIME    NULL,  -- el cliente pidió borrar sus datos: se conservan bloqueados por obligación legal
   created_at        DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP,
   updated_at        DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
@@ -206,6 +217,7 @@ CREATE TABLE IF NOT EXISTS bookings (
   KEY idx_bookings_session (session_id, status),
   KEY idx_bookings_email (customer_email),
   KEY idx_bookings_stripe (stripe_session_id),
+  KEY idx_bookings_subscription (stripe_subscription_id),
   CONSTRAINT fk_bookings_class    FOREIGN KEY (class_id)    REFERENCES classes (id)        ON DELETE SET NULL,
   CONSTRAINT fk_bookings_session  FOREIGN KEY (session_id)  REFERENCES class_sessions (id) ON DELETE SET NULL,
   CONSTRAINT fk_bookings_customer FOREIGN KEY (customer_id) REFERENCES customers (id)      ON DELETE SET NULL
@@ -323,6 +335,27 @@ CREATE TABLE IF NOT EXISTS privacy_requests (
   PRIMARY KEY (id),
   UNIQUE KEY uq_privacy_token (token_hash),
   KEY idx_privacy_email (email)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+-- Bandeja de Mensajes del panel: formulario de contacto, encargos (peticiones) y
+-- solicitudes de clase privada (estas además tienen su reserva en bookings).
+-- Se borran al año (Privacy::anonymizeExpired) o cuando el remitente pide suprimir sus datos.
+CREATE TABLE IF NOT EXISTS messages (
+  id           INT UNSIGNED NOT NULL AUTO_INCREMENT,
+  type         ENUM('contact','request','private_class') NOT NULL DEFAULT 'contact',
+  subject      VARCHAR(160) NOT NULL DEFAULT '',
+  name         VARCHAR(160) NOT NULL,
+  email        VARCHAR(190) NOT NULL,
+  phone        VARCHAR(40)  NOT NULL DEFAULT '',
+  body         TEXT         NOT NULL,
+  booking_id   INT UNSIGNED NULL,
+  read_at      DATETIME     NULL,
+  handled_at   DATETIME     NULL,
+  created_at   DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  PRIMARY KEY (id),
+  KEY idx_messages_email (email),
+  KEY idx_messages_booking (booking_id),
+  KEY idx_messages_created (created_at)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 -- Cambios de esquema aplicados a instalaciones antiguas (ver Services/Migrations.php)

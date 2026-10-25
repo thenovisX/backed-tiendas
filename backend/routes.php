@@ -1,9 +1,11 @@
 <?php
 declare(strict_types=1);
 
+use App\Controllers\Admin\CalendarAdminController as Calendar;
 use App\Controllers\Admin\ClassAdminController as Classes;
 use App\Controllers\Admin\CustomerAdminController as Customers;
 use App\Controllers\Admin\GalleryAdminController as Gallery;
+use App\Controllers\Admin\MessageAdminController as Messages;
 use App\Controllers\Admin\OrderAdminController as Orders;
 use App\Controllers\Admin\ProductAdminController as Products;
 use App\Controllers\Admin\SettingsController;
@@ -73,7 +75,10 @@ return static function (Router $r): void {
     $r->patch('/admin/sessions/{id}', [Classes::class, 'updateSession'], $admin);
     $r->delete('/admin/sessions/{id}', [Classes::class, 'destroySession'], $admin);
     $r->get('/admin/bookings', [Classes::class, 'bookings'], $admin);
+    $r->post('/admin/bookings', [Calendar::class, 'store'], $admin);
     $r->patch('/admin/bookings/{id}', [Classes::class, 'updateBooking'], $admin);
+    $r->get('/admin/calendar', [Calendar::class, 'index'], $admin);
+    $r->get('/admin/payment-alerts', [Calendar::class, 'alerts'], $admin);
 
     $r->get('/admin/gallery', [Gallery::class, 'index'], $admin);
     $r->post('/admin/gallery', [Gallery::class, 'store'], $admin);
@@ -97,6 +102,12 @@ return static function (Router $r): void {
     $r->get('/admin/customers/{id}/export', [Customers::class, 'export'], $admin);
     $r->get('/admin/marketing', [Customers::class, 'marketing'], $admin);
     $r->get('/admin/privacy-requests', [Customers::class, 'requests'], $admin);
+
+    $r->get('/admin/messages', [Messages::class, 'index'], $admin);
+    $r->get('/admin/messages/unread', [Messages::class, 'unread'], $admin);
+    $r->get('/admin/messages/{id}', [Messages::class, 'show'], $admin);
+    $r->patch('/admin/messages/{id}', [Messages::class, 'update'], $admin);
+    $r->delete('/admin/messages/{id}', [Messages::class, 'destroy'], $admin);
 
     $r->get('/admin/settings', [SettingsController::class, 'show'], $admin);
     $r->put('/admin/settings', [SettingsController::class, 'update'], $admin);
