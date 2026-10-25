@@ -841,7 +841,7 @@ views.galeria = async () => {
       ${field("Título", '<input name="title" required maxlength="160">')}
       <div class="grid-2">${field("Técnica", '<input name="technique" maxlength="160" placeholder="Gres y engobe">')}${field("Año", `<input name="year" maxlength="10" value="${new Date().getFullYear()}">`)}</div>
       ${availabilityField("unique")}
-      ${field("Texto alternativo", '<input name="alt" maxlength="255">', "Describe la foto para personas que no la ven")}`));
+      ${field("Descripción de la foto (texto alternativo)", '<input name="alt" maxlength="255" placeholder="Qué se ve en la foto: objeto, material, color…">', "Lo leen Google y las personas que no ven la foto. Si lo dejas vacío se usa el título y la técnica")}`));
     wireUpload(body, "/admin/gallery", () => { closeDrawer(); views.galeria(); });
   });
   const ids = items.map((g) => g.id);
@@ -867,7 +867,7 @@ views.galeria = async () => {
         ${field("Título", input("title", g.title, "required maxlength=160"))}
         <div class="grid-2">${field("Técnica", input("technique", g.technique, "maxlength=160"))}${field("Año", input("year", g.year, "maxlength=10"))}</div>
         ${availabilityField(g.availability)}
-        ${field("Texto alternativo", input("alt", g.image.alt, "maxlength=255"))}
+        ${field("Descripción de la foto (texto alternativo)", input("alt", g.image.alt, 'maxlength=255 placeholder="Qué se ve en la foto: objeto, material, color…"'), "Lo leen Google y las personas que no ven la foto")}
         <div class="row row--end"><button class="btn" type="submit">Guardar</button></div></form>`);
       const form = $("[data-form]", body);
       form.addEventListener("submit", (e) => {
