@@ -9,7 +9,9 @@ use App\Http\Request;
 use App\Http\Response;
 use App\Services\AppSettings;
 use App\Services\Fulfillment;
+use App\Services\Messages;
 use App\Services\Packlink;
+use App\Services\PaymentAlerts;
 use App\Services\Privacy;
 use App\Services\Stripe;
 use App\Validator;
@@ -132,7 +134,10 @@ final class OrderAdminController
             'orders_to_collect' => (int) $db->value("SELECT COUNT(*) FROM orders WHERE status = 'paid' AND shipping_method = 'pickup'"),
             'sales_30d_cents' => (int) $db->value("SELECT COALESCE(SUM(total_cents), 0) FROM orders WHERE status IN ('paid','shipped') AND paid_at > NOW() - INTERVAL 30 DAY"),
             'bookings_30d_cents' => (int) $db->value("SELECT COALESCE(SUM(total_cents), 0) FROM bookings WHERE status = 'confirmed' AND paid_at > NOW() - INTERVAL 30 DAY"),
+            'bookings_unpaid' => (int) $db->value("SELECT COUNT(*) FROM bookings WHERE status = 'confirmed' AND payment_method IN ('in_person','subscription') AND paid_at IS NULL AND (payment_method = 'subscription' AND subscription_status = 'past_due' OR payment_method = 'in_person' AND (starts_at IS NULL OR starts_at >= CURDATE()))"),
+            'payments_overdue' => count(PaymentAlerts::overdue()),
             'private_requests' => (int) $db->value("SELECT COUNT(*) FROM bookings WHERE status = 'requested'"),
+            'unread_messages' => Messages::unread(),
             'upcoming_sessions' => (int) $db->value('SELECT COUNT(*) FROM class_sessions WHERE is_cancelled = 0 AND starts_at > NOW()'),
             'low_stock' => array_map(static fn ($p) => ['id' => (int) $p['id'], 'title' => $p['title'], 'stock' => (int) $p['stock']],
                 $db->all('SELECT id, title, stock FROM products WHERE is_active = 1 AND sold_out = 0 AND stock <= 1 ORDER BY stock, title')),

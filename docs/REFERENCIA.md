@@ -107,7 +107,7 @@ Alternativas: subir tú el `.env` (ver `backend/.env.example`) y después abrir 
 Todo lo que sigue se escribe en `https://tudominio.com/admin/` → **Ajustes**. Las claves se guardan **cifradas** en la tabla `settings` (libsodium con la `APP_KEY` del `.env`, que no está en la base de datos) y nunca se vuelven a mostrar: el panel solo enseña los 4 últimos caracteres.
 1. Crea la cuenta en [dashboard.stripe.com](https://dashboard.stripe.com) y empieza en **modo de prueba**.
 2. **Desarrolladores → Claves de API** → copia la **clave secreta** (`sk_test_…`) en “Clave secreta”.
-3. **Desarrolladores → Webhooks → Añadir destino**: pega la URL que muestra el panel (`https://tudominio.com/api/webhooks/stripe`) y marca los eventos `checkout.session.completed`, `checkout.session.async_payment_succeeded`, `checkout.session.async_payment_failed`, `checkout.session.expired`. Copia su **secreto de firma** (`whsec_…`) en “Secreto del webhook”.
+3. **Desarrolladores → Webhooks → Añadir destino**: pega la URL que muestra el panel (`https://tudominio.com/api/webhooks/stripe`) y marca los eventos `checkout.session.completed`, `checkout.session.async_payment_succeeded`, `checkout.session.async_payment_failed`, `checkout.session.expired` y, para las suscripciones de las clases, `invoice.paid`, `invoice.payment_failed`, `customer.subscription.deleted`. Copia su **secreto de firma** (`whsec_…`) en “Secreto del webhook”.
 4. **Guardar ajustes** y **Probar conexión con Stripe**. La etiqueta indica “Modo prueba” o “Modo real”.
 5. Prueba una compra con la tarjeta `4242 4242 4242 4242` (cualquier fecha futura y CVC).
 6. Para cobrar de verdad: activa la cuenta, pon la clave `sk_live_…` y crea el webhook también en modo live (tiene otro `whsec_`).
@@ -184,8 +184,12 @@ Cualquier campo de precio que mande el navegador **se ignora** (hay un test que 
 **Agotado**: una pieza aparece agotada si el interruptor manual está activado **o** si `stock − unidades retenidas = 0`. Al público no se le muestra el stock exacto.
 
 ### Reservas
+- **Formas de pago de una clase en grupo**: cada clase activa por separado *pago único online* (`pay_online`), *suscripción mensual* (`pay_subscription` + cuota `monthly_price_cents`, Stripe Checkout en modo `subscription` con el precio creado al vuelo, sin productos que configurar en Stripe) y *pagar en el taller* (`pay_in_person`). Al reservar se elige entre las activas (si solo hay una no se pregunta) con `payment_method`: `online`, `subscription` o `in_person`. En suscripciones, `invoice.paid` (renovación) pone `paid_at`/`paid_until`, `invoice.payment_failed` deja la reserva sin pagar (`subscription_status = past_due`, aviso por email y filtro «Por cobrar» del panel) y `customer.subscription.deleted` la marca `canceled`. La baja de una suscripción se hace desde Stripe → Suscripciones. Migración 6 (automática).
 - **Clases en grupo**: cada clase tiene horarios (`class_sessions`) con plazas y precio propios opcionales. Al reservar se retienen las plazas mientras se paga y la reserva se confirma con el webhook de Stripe. No se puede reservar más de lo que queda (se bloquea el horario en la base de datos).
-- **Clases privadas**: cada modalidad (1 persona, 2 personas, pack…) es una clase de tipo `private`. El cliente envía fecha y franja preferidas; queda como `requested` y el estudio la confirma desde el panel (y cobra en el estudio o con un enlace de pago de Stripe).
+- **Pagar en el taller**: si la clase lo admite (`classes.pay_in_person`, interruptor «Se puede pagar en el taller» en Panel → Clases, activo por defecto), el cliente elige al reservar entre pagar online o en el taller. En el taller la reserva queda `confirmed` con `payment_method = in_person` y `paid_at` vacío: ocupa plaza, no caduca (ni `CHECKOUT_HOLD_MINUTES` ni `cleanup.php` la tocan) y se envía el email de confirmación con «Pago: en el taller». En Panel → Reservas → «Por cobrar en el taller» se marca como cobrada (`paid_at`), y así cuenta en «Clases cobradas». Funciona aunque Stripe no esté configurado. Límite extra: 5 reservas sin pago por hora e IP. Borrar los datos de un cliente (RGPD) cancela sus reservas sin cobrar y libera la plaza.
+- **Clases privadas**: cada modalidad (1 persona, 2 personas, pack…) es una clase de tipo `private`. El cliente envía fecha y franja preferidas; queda como `requested` (`payment_method = in_person`) y el estudio la confirma desde el panel y la marca como cobrada cuando le paguen.
+- **Calendario de reservas** (`Controllers/Admin/CalendarAdminController.php`, `Services/PaymentAlerts.php`, migración 6): `GET /admin/calendar?from&to` devuelve las reservas por día; `POST /admin/bookings` añade una a mano (`source = manual`, siempre `in_person`, sin comprobar plazas). Cada reserva tiene `billing_type`: `single` (pago único) o `subscription` (cuota mensual; sale cada semana, el mismo día y hora, hasta cancelarla) y se marca cobrada con `PATCH /admin/bookings/{id} {paid}` (`paid_at`; en una suscripción es el último cobro y «al día» significa cobrada este mes). **Avisos**: una suscripción sin cobrar a partir del día 8 del mes (`PaymentAlerts::GRACE_DAY`) y un pago único cuya clase ya pasó sin cobrar salen en Panel → Calendario, en el contador del menú y en Resumen (`payments_overdue`), y se envían por email a `MAIL_ADMIN` (repite cada 7 días hasta cobrarlo). El email se comprueba en cada petición a la API (sin cron).
+- **Mensajes**: el formulario de contacto (`POST /contact`) y cada solicitud de clase privada se guardan en la tabla `messages` y salen en **Panel → Mensajes** (además del email al estudio si hay `MAIL_ADMIN`). El motivo «Encargo personalizado» se guarda como tipo `request` (encargo); el resto, como `contact`; las clases privadas, como `private_class` enlazadas a su reserva. Confirmar o cancelar la reserva deja el mensaje atendido; borrar el mensaje no toca la reserva. Los motivos que cuentan como encargo están en `Messages::REQUEST_REASONS`.
 - **Repositorio de referencia**: el encargo mencionaba un sistema de reservas anterior, pero no llegó el enlace. Este sistema se ha construido sobre la interfaz de reservas que ya tenía la web; si quieres incorporar algo de ese repositorio, se puede adaptar.
 
 ### Imágenes (galería, productos y clases)
@@ -201,6 +205,8 @@ Cualquier campo de precio que mande el navegador **se ignora** (hay un test que 
 - Peso máximo de subida `UPLOAD_MAX_MB`; tamaño máximo 36 megapíxeles.
 - Proporción con un 2 % de margen. Si no encaja se rechaza con un mensaje claro, o se recorta al centro si se marca “Recortar automáticamente”.
 - Se corrige la orientación de las fotos del móvil (EXIF), se eliminan los metadatos (incluida la ubicación GPS) y se guarda en **WebP** (o JPEG si el servidor no tiene WebP) más una miniatura.
+
+**Cerrar la tienda**: Panel → Ajustes → **Tienda** tiene el interruptor «Tienda abierta» (`SHOP_OPEN`) y un aviso opcional (`SHOP_CLOSED_MESSAGE`, por defecto «No disponible en estos momentos»). Cerrada, `/site` devuelve `shop_open: false`, la web oculta la cesta y los botones de compra y enseña el aviso en la tienda y las fichas, y `POST /checkout` responde 503 `shop_closed`. Los pedidos ya pagados no se tocan; el resto del sitio (clases, galería, contacto) sigue igual.
 
 ## Seguridad
 
@@ -270,7 +276,7 @@ Obras publicadas en orden.
 ```
 
 #### `GET /classes`
-Clases en grupo con sus próximos horarios y modalidades privadas.
+Clases en grupo con sus próximos horarios y modalidades privadas. Cada clase lleva `pay_in_person` y la respuesta, `online_payment` (Stripe listo).
 ```json
 { "data": {
   "group": [ { "id": 1, "slug": "iniciacion-torno", "kind": "group", "title": "Iniciación al torno", "description": "…",
@@ -332,11 +338,13 @@ Lo usa `gracias.html`. Si el webhook aún no ha llegado, el servidor consulta a 
 Reserva plazas de un horario y devuelve el pago.
 ```json
 // Petición
-{ "session_id": 1, "seats": 2, "customer": { "name": "Luis", "email": "luis@example.com", "phone": "" } }
+{ "session_id": 1, "seats": 2, "payment_method": "online", "customer": { "name": "Luis", "email": "luis@example.com", "phone": "" } }
 // Respuesta 201
-{ "data": { "reference": "CL-Q8R2M4TZ", "total_cents": 13000, "checkout_url": "https://checkout.stripe.com/…" } }
+{ "data": { "reference": "CL-Q8R2M4TZ", "total_cents": 13000, "payment_method": "online", "checkout_url": "https://checkout.stripe.com/…" } }
+// Con "payment_method": "in_person" (si la clase tiene pay_in_person) no hay checkout_url:
+{ "data": { "reference": "CL-7B2K9QXA", "total_cents": 13000, "payment_method": "in_person", "status": "confirmed" } }
 ```
-Errores: `404` horario no disponible, `409 not_enough_seats`, `422`, `503`.
+Errores: `404` horario no disponible, `409 not_enough_seats`, `422` (también si la clase no admite pagar en el taller), `503` (pago online sin Stripe).
 
 #### `POST /bookings/private`
 Solicitud de clase privada (`preferred_slot`: `Mañana` o `Tarde`).
@@ -349,9 +357,9 @@ Solicitud de clase privada (`preferred_slot`: `Mañana` o `Tarde`).
 ```
 
 #### `POST /contact`
-Envía el formulario de contacto al email del estudio (no se guarda).
+Guarda el mensaje en Panel → Mensajes (tipo `request` si el motivo es «Encargo personalizado», si no `contact`) y avisa por email al estudio. Pide `consents.privacy`.
 ```json
-{ "name": "Eva", "email": "eva@example.com", "reason": "Encargo personalizado", "message": "Hola…" }
+{ "name": "Eva", "email": "eva@example.com", "reason": "Encargo personalizado", "message": "Hola…", "consents": { "privacy": true } }
 ```
 Respuesta `201 { "data": { "sent": true } }`.
 
@@ -406,15 +414,15 @@ Mientras no hay base de datos configurada (o faltan las tablas), el resto de rut
 | `PATCH /admin/products/{id}/images/{imageId}` | `{ "alt": "…" }` texto alternativo | Producto |
 | `DELETE /admin/products/{id}/images/{imageId}` | — | Producto |
 | `GET /admin/classes` | — | Todas las clases con todos sus horarios (también pasados y cancelados) |
-| `POST /admin/classes` | `title`*, `kind`* (`group`/`private`), `price_cents`*, `description`, `duration_minutes`, `capacity`, `is_active`, `sort_order` | `201` clase |
+| `POST /admin/classes` | `title`*, `kind`* (`group`/`private`), `price_cents`*, `description`, `duration_minutes`, `capacity`, `pay_in_person`, `is_active`, `sort_order` | `201` clase |
 | `PUT`/`PATCH /admin/classes/{id}` | Campos anteriores | Clase |
 | `DELETE /admin/classes/{id}` | — | `204` (las reservas hechas se conservan) |
 | `POST /admin/classes/{id}/image` | multipart: `image`*, `crop=1` | Clase |
 | `POST /admin/sessions` | `class_id`*, `starts_at`* (`2026-11-08T10:00`), `label`, `price_cents` (null = el de la clase), `capacity` (null = el de la clase), `repeat_weeks` (1–52: crea el mismo horario cada semana, cada uno con sus plazas) | `201` primer horario con `seats_left` y `created` (cuántos se han creado) |
 | `PUT`/`PATCH /admin/sessions/{id}` | Campos anteriores + `is_cancelled` | Horario |
 | `DELETE /admin/sessions/{id}` | — | `204` · `409` si tiene reservas (cancélalo en su lugar) |
-| `GET /admin/bookings?status=&session_id=&upcoming=1` | — | Reservas con datos del cliente |
-| `PATCH /admin/bookings/{id}` | `status` (`requested`/`confirmed`/`cancelled`), `notes`, `starts_at` | Reserva |
+| `GET /admin/bookings?status=&session_id=&upcoming=1` | — | Reservas con datos del cliente y `payment_method`. `status=unpaid`: confirmadas para pagar en el taller y sin cobrar |
+| `PATCH /admin/bookings/{id}` | `status` (`requested`/`confirmed`/`cancelled`), `notes`, `starts_at`, `paid` (solo en el taller: `true` cobrada, `false` deshacer) | Reserva |
 | `GET /admin/gallery` | — | Todas las obras (también ocultas) |
 | `POST /admin/gallery` | multipart: `image`*, `title`*, `technique`, `year`, `alt`, `is_published`, `crop=1` | `201` obra |
 | `PUT`/`PATCH /admin/gallery/{id}` | `title`, `technique`, `year`, `alt`, `is_published` | Obra |
@@ -426,6 +434,11 @@ Mientras no hay base de datos configurada (o faltan las tablas), el resto de rut
 | `PATCH /admin/orders/{id}` | `{ "status": "shipped" }` (`paid`, `shipped`, `cancelled`, `refunded`) | Pedido |
 | `POST /admin/orders/{id}/packlink` | — | Reintenta crear el borrador en Packlink |
 | `GET /admin/customers` | — | Clientes con nº de pedidos y reservas |
+| `GET /admin/messages?type=contact\|request\|private_class&status=unread\|open\|handled` | — | Bandeja de mensajes (los 300 más recientes) |
+| `GET /admin/messages/unread` | — | `{ "unread": 3 }` (contador del menú) |
+| `GET /admin/messages/{id}` | — | Mensaje; abrirlo lo marca como leído |
+| `PATCH /admin/messages/{id}` | `{ "handled": true }` y/o `{ "read": false }` | Mensaje |
+| `DELETE /admin/messages/{id}` | — | `204` (la reserva de una clase privada se conserva) |
 
 Ejemplo:
 ```bash
@@ -451,6 +464,7 @@ curl -X POST https://tudominio.com/api/admin/gallery \
 | `gallery_items` | Obras de la galería |
 | `classes`, `class_sessions` | Clases (grupo/privada) y horarios |
 | `bookings` | Reservas y solicitudes (copian título, fecha y precio) |
+| `messages` | Bandeja de Mensajes: contacto, encargos y solicitudes de clase privada (se borran al año) |
 | `orders`, `order_items` | Pedidos y líneas (copian título y precios del momento) |
 | `stripe_events` | Eventos de Stripe ya procesados |
 
@@ -476,6 +490,7 @@ curl -X POST https://tudominio.com/api/admin/gallery \
 - **`Fulfillment`** · `paid(sesión)` marca pedido/reserva como pagado, descuenta stock, crea el envío y avisa por email · `failed(sesión)` libera stock o plazas · `createPacklinkDraft(pedido)`.
 - **`ImageProcessor`** · `store(archivo, tipo, alt, recortar)` valida, normaliza y guarda · `delete(id)` · `rules()`.
 - **`Customers`** · `validate` (bloque `customer`) · `upsert` (crea o actualiza por email).
+- **`Messages`** · `record(tipo, asunto, remitente, texto, reserva)` · `typeForReason(motivo)` · `unread()` · `handleBooking(id)` · `present`.
 - **`Mailer`** · `send`, `admin`, `money` · **`Log`** · `error`, `info` · **`Settings`** · `currency`, `appUrl`, `holdMinutes`, `uploadsUrl`, `reference(prefijo)`.
 - **`AppSettings`** · `boot` (carga los ajustes del panel en cada petición) · `forPanel` · `save(valores, borrar)` con validación por tipo · cifrado `sodium_crypto_secretbox` con `APP_KEY`.
 - **`Installer`** · `isInstalled` · `install(db, admin, seed)`: prueba MySQL, escribe el `.env` (permisos 600), crea tablas y el primer admin.
@@ -489,6 +504,7 @@ curl -X POST https://tudominio.com/api/admin/gallery \
 - **`Admin\SettingsController`**: `show`, `update`, `test`.
 - **`Admin\ProductAdminController`**: `index`, `show`, `store`, `update`, `soldOut`, `destroy`, `uploadImage`, `reorderImages`, `updateImage`, `deleteImage`.
 - **`Admin\ClassAdminController`**: `index`, `store`, `update`, `destroy`, `uploadImage`, `storeSession`, `updateSession`, `destroySession`, `bookings`, `updateBooking`.
+- **`Admin\MessageAdminController`**: `index`, `unread`, `show`, `update`, `destroy`.
 - **`Admin\GalleryAdminController`**: `index`, `rules`, `store`, `update`, `reorder`, `destroy`.
 - **`Admin\OrderAdminController`**: `index`, `show`, `update`, `packlink`, `customers`, `stats`.
 
@@ -505,11 +521,12 @@ curl -X POST https://tudominio.com/api/admin/gallery \
 
 `https://tudominio.com/admin/`
 
-- **Resumen**: pedidos por enviar y por recoger, solicitudes de clase privada, próximos horarios, ventas de 30 días, stock bajo y avisos si falta configurar Stripe o Packlink.
+- **Mensajes**: bandeja con todo lo que llega desde la web (contacto, encargos y solicitudes de clase privada). Filtros por tipo y por estado (por atender, sin leer, atendidos), contador de no leídos en el menú (también en el botón del menú del móvil; se actualiza cada minuto), ficha con nombre, email y teléfono, «Responder por email», marcar como atendido o no leído y borrar.
+- **Resumen**: mensajes sin leer, pedidos por enviar y por recoger, solicitudes de clase privada, próximos horarios, ventas de 30 días, stock bajo y avisos si falta configurar Stripe o Packlink.
 - **Pedidos**: filtros por estado; detalle con productos, dirección y pago; marcar como enviado o reembolsado; crear el envío en Packlink.
 - **Productos**: alta, edición y borrado; precio, descuento, stock, peso y medidas; interruptor **Agotado** directamente en la lista; fotos con portada, orden y validación.
 - **Clases y horarios**: editar clases y precios; añadir horarios con plazas y precio propios, sueltos o **semanales** (“Repetir cada semana durante 1 mes … 1 año”: se crea un horario por semana, el mismo día y hora, y en la web salen en una sola fila “Cada martes” con un desplegable para elegir el día); cancelar horarios; modalidades de clase privada.
-- **Reservas**: próximas reservas, solicitudes privadas (confirmar con fecha acordada o cancelar) y notas internas.
+- **Reservas**: próximas reservas, solicitudes privadas (confirmar con fecha acordada o cancelar), reservas por cobrar en el taller («Marcar como cobrada») y notas internas.
 - **Galería**: subir obras con validación, editar textos, ocultar/publicar, ordenar y borrar.
 - **Clientes**.
 - **Ajustes**: **datos de la web** (dirección, ciudad, horario, email, teléfono, WhatsApp, Instagram, Facebook, TikTok y enlace de Google Maps, que salen en el pie, el menú del móvil y Contacto); claves de Stripe (con la URL y los eventos del webhook para copiar, modo prueba/real y botón de prueba), API key y remitente de Packlink, opciones de envío y emails.

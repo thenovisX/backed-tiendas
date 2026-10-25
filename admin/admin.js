@@ -113,6 +113,13 @@ const STATUS = {
   requested: ["Solicitada", "warn"], pending_payment: ["Pagando", "warn"], confirmed: ["Confirmada", "ok"],
 };
 const badge = (s) => { const [t, c] = STATUS[s] || [s, ""]; return `<span class="badge badge--${c}">${t}</span>`; };
+// Reserva para pagar en el taller: confirmada pero sin cobrar hasta que se marca como pagada
+const inPersonUnpaid = (b) => b.payment_method === "in_person" && !b.paid_at && b.status !== "cancelled";
+const payBadge = (b) => b.status === "cancelled" ? ""
+  : b.payment_method === "subscription" ? (b.subscription_status === "canceled" ? '<span class="badge badge--bad">Suscripción cancelada</span>'
+    : b.paid_at ? '<span class="badge badge--ok">Suscripción al día</span>' : '<span class="badge badge--warn">Cuota sin pagar</span>')
+  : b.payment_method !== "in_person" ? ""
+  : b.paid_at ? '<span class="badge badge--ok">Cobrada en el taller</span>' : '<span class="badge badge--warn">Pagar en el taller</span>';
 const filters = (options, current) => `<div class="filters" data-filters>${options.map(([v, t]) =>
   `<button type="button" data-value="${v}" aria-pressed="${v === current}">${t}</button>`).join("")}</div>`;
 
@@ -121,7 +128,7 @@ const filters = (options, current) => `<div class="filters" data-filters>${optio
    ========================================================== */
 const main = $("[data-main]");
 const views = {};
-let state = { orderStatus: "", bookingStatus: "", customerTab: "profiles" };
+let state = { orderStatus: "", bookingStatus: "", customerTab: "profiles", messageType: "", messageStatus: "open" };
 
 /* ---------- Resumen ---------- */
 views.resumen = async () => {
@@ -133,9 +140,12 @@ views.resumen = async () => {
     ${s.legal_missing.length ? '<p class="notice">Faltan los datos del titular (nombre o razón social, NIF, domicilio y email) que salen en el aviso legal, la privacidad y las condiciones de venta. La ley obliga a mostrarlos: rellénalos en <a href="#ajustes">Ajustes → Datos legales</a>.</p>' : ""}
     ${s.legacy_customers ? `<p class="notice">Hay ${s.legacy_customers} ${s.legacy_customers === 1 ? "cliente guardado" : "clientes guardados"} de antes de pedir permiso para crear perfiles. Revísalo en <a href="#clientes">Clientes</a>.</p>` : ""}
     <div class="cards">
+      <a class="card" href="#mensajes"><span class="eyebrow">Mensajes sin leer</span><p class="card__num">${s.unread_messages}</p></a>
       <a class="card" href="#pedidos"><span class="eyebrow">Pedidos por enviar</span><p class="card__num">${s.orders_to_ship}</p></a>
       <a class="card" href="#pedidos"><span class="eyebrow">Para recoger en estudio</span><p class="card__num">${s.orders_to_collect}</p></a>
       <a class="card" href="#reservas"><span class="eyebrow">Clases privadas por confirmar</span><p class="card__num">${s.private_requests}</p></a>
+      <a class="card" href="#calendario"><span class="eyebrow">Cobros atrasados</span><p class="card__num">${s.payments_overdue}</p></a>
+      <a class="card" href="#reservas" data-unpaid><span class="eyebrow">Reservas por cobrar</span><p class="card__num">${s.bookings_unpaid}</p></a>
       <a class="card" href="#clases"><span class="eyebrow">Próximos horarios</span><p class="card__num">${s.upcoming_sessions}</p></a>
       <div class="card"><span class="eyebrow">Ventas tienda · 30 días</span><p class="card__num">${money(s.sales_30d_cents)}</p></div>
       <div class="card"><span class="eyebrow">Clases cobradas · 30 días</span><p class="card__num">${money(s.bookings_30d_cents)}</p></div>
@@ -144,7 +154,72 @@ views.resumen = async () => {
     ${s.low_stock.length ? `<div class="table-wrap"><table><tbody>${s.low_stock.map((p) =>
       `<tr><td>${esc(p.title)}</td><td class="num">${p.stock} ${p.stock === 1 ? "unidad" : "unidades"}</td></tr>`).join("")}</tbody></table></div>`
       : '<p class="muted">Todo bien de stock.</p>'}`;
+  $("[data-unpaid]")?.addEventListener("click", () => { state.bookingStatus = "unpaid"; });
 };
+
+/* ---------- Mensajes: contacto, encargos y clases privadas ---------- */
+const MESSAGE_TYPE = { contact: ["Contacto", ""], request: ["Encargo", "ink"], private_class: ["Clase privada", "warn"] };
+const messageType = (t) => { const [txt, c] = MESSAGE_TYPE[t] || [t, ""]; return `<span class="badge badge--${c}">${txt}</span>`; };
+
+// Contador de no leídos en el menú (y en el botón del menú en móvil)
+function setUnread(n) {
+  $$("[data-unread]").forEach((el) => { el.textContent = n > 99 ? "99+" : String(n); el.hidden = !n; });
+}
+const refreshUnread = () => api("GET", "/admin/messages/unread").then((r) => setUnread(r.unread)).catch(() => {});
+
+views.mensajes = async () => {
+  const q = new URLSearchParams();
+  if (state.messageType) q.set("type", state.messageType);
+  if (state.messageStatus) q.set("status", state.messageStatus);
+  const list = await api("GET", "/admin/messages" + (q.toString() ? `?${q}` : ""));
+  refreshUnread();
+  main.innerHTML = `
+    <div class="page-head"><div><p class="eyebrow">Bandeja</p><h1>Mensajes</h1><p>Lo que te escriben desde la web: el formulario de contacto, los encargos y las solicitudes de clase privada. Contesta por email o teléfono y márcalo como atendido.</p></div></div>
+    <div data-type>${filters([["", "Todos"], ["contact", "Contacto"], ["request", "Encargos"], ["private_class", "Clases privadas"]], state.messageType)}</div>
+    <div data-status>${filters([["open", "Por atender"], ["unread", "Sin leer"], ["handled", "Atendidos"], ["", "Todos"]], state.messageStatus)}</div>
+    <div class="table-wrap">${list.length ? `<table>
+      <thead><tr><th>De</th><th>Tipo</th><th>Mensaje</th><th>Recibido</th><th>Estado</th></tr></thead>
+      <tbody>${list.map((m) => `<tr class="is-clickable${m.read ? "" : " is-unread"}" data-id="${m.id}">
+        <td>${m.read ? "" : '<span class="dot" title="Sin leer"></span>'}${esc(m.name)}<br><span class="muted">${esc(m.email)}</span></td>
+        <td>${messageType(m.type)}</td>
+        <td><span class="message-preview">${m.subject ? `<strong>${esc(m.subject)}</strong> · ` : ""}${esc(m.body)}</span></td>
+        <td>${fmtDate(m.created_at)}</td>
+        <td>${m.handled ? '<span class="badge badge--ok">Atendido</span>' : m.read ? '<span class="badge">Leído</span>' : '<span class="badge badge--bad">Nuevo</span>'}</td></tr>`).join("")}
+      </tbody></table>` : '<p class="empty">No hay mensajes aquí.</p>'}</div>`;
+  $("[data-type] [data-filters]").addEventListener("click", (e) => { const b = e.target.closest("button"); if (b) { state.messageType = b.dataset.value; views.mensajes().catch(fail); } });
+  $("[data-status] [data-filters]").addEventListener("click", (e) => { const b = e.target.closest("button"); if (b) { state.messageStatus = b.dataset.value; views.mensajes().catch(fail); } });
+  $$("tr[data-id]").forEach((tr) => tr.addEventListener("click", () => openMessage(tr.dataset.id).catch(fail)));
+};
+
+async function openMessage(id) {
+  const m = await api("GET", `/admin/messages/${id}`);
+  refreshUnread();
+  const subject = encodeURIComponent(`Re: ${m.subject || "Tu mensaje"}`);
+  const body = openDrawer(m.type === "private_class" ? "Solicitud de clase privada" : m.type === "request" ? "Encargo" : "Mensaje", `
+    <div class="row" style="margin-bottom:1rem">${messageType(m.type)}<span class="muted">${fmtDate(m.created_at)}</span>${m.handled ? `<span class="badge badge--ok">Atendido ${fmtDate(m.handled_at, false)}</span>` : ""}</div>
+    <dl><dt>Nombre</dt><dd>${esc(m.name)}</dd><dt>Email</dt><dd><a href="mailto:${esc(m.email)}">${esc(m.email)}</a></dd>
+      <dt>Teléfono</dt><dd>${m.phone ? `<a href="tel:${esc(m.phone.replace(/\s+/g, ""))}">${esc(m.phone)}</a>` : "—"}</dd>
+      ${m.subject ? `<dt>${m.type === "private_class" ? "Modalidad" : "Motivo"}</dt><dd>${esc(m.subject)}</dd>` : ""}</dl>
+    <h3>Mensaje</h3>
+    <div class="message-body">${esc(m.body)}</div>
+    ${m.booking_id ? '<p class="muted" style="font-size:.85rem;margin-top:1rem">La reserva está en <a href="#reservas" data-go-bookings>Reservas → Solicitudes privadas</a>: al confirmarla o cancelarla allí, este mensaje queda atendido.</p>' : ""}
+    <div class="row row--end" style="margin-top:1.5rem">
+      <button class="btn btn--danger" type="button" data-delete>Borrar</button>
+      <button class="btn btn--ghost" type="button" data-unread-btn>Marcar como no leído</button>
+      <a class="btn btn--ghost" href="mailto:${esc(m.email)}?subject=${subject}">Responder por email</a>
+      <button class="btn" type="button" data-handled>${m.handled ? "Volver a «por atender»" : "Marcar como atendido"}</button>
+    </div>`);
+  const done = (msg) => { toast(msg); closeDrawer(); views.mensajes().catch(fail); };
+  $("[data-handled]", body).addEventListener("click", () => api("PATCH", `/admin/messages/${m.id}`, { handled: !m.handled })
+    .then(() => done(m.handled ? "Mensaje pendiente otra vez" : "Mensaje atendido")).catch(fail));
+  $("[data-unread-btn]", body).addEventListener("click", () => api("PATCH", `/admin/messages/${m.id}`, { read: false })
+    .then(() => done("Marcado como no leído")).catch(fail));
+  $("[data-delete]", body).addEventListener("click", () => {
+    if (!confirm(m.booking_id ? "¿Borrar el mensaje? La reserva seguirá en Reservas." : "¿Borrar el mensaje? No se puede deshacer.")) return;
+    api("DELETE", `/admin/messages/${m.id}`).then(() => done("Mensaje borrado")).catch(fail);
+  });
+  $("[data-go-bookings]", body)?.addEventListener("click", () => { state.bookingStatus = "requested"; closeDrawer(); });
+}
 
 /* ---------- Pedidos ---------- */
 views.pedidos = async () => {
@@ -480,7 +555,7 @@ function classCard(c) {
 function classForm(c) {
   const body = openDrawer(c ? c.title : "Nueva clase", `
     <form class="stack" data-form novalidate>
-      ${c ? "" : field("Tipo", '<select name="kind"><option value="group">Clase en grupo (con horarios y pago online)</option><option value="private">Modalidad de clase privada (se solicita)</option></select>')}
+      ${c ? "" : field("Tipo", '<select name="kind"><option value="group">Clase en grupo (con horarios y pago online)</option><option value="private">Modalidad de clase privada (se solicita y se paga en el taller)</option></select>')}
       ${field("Título", input("title", c?.title, "required maxlength=160"))}
       <div class="grid-3">
         ${field("Precio (€)", input("price", eurosInput(c?.price_cents), 'inputmode="decimal" required'))}
@@ -490,10 +565,17 @@ function classForm(c) {
       ${field("Descripción", `<textarea name="description">${esc(c?.description)}</textarea>`)}
       ${field("Orden", input("sort_order", c?.sort_order ?? 0, "type=number"), "Las clases se muestran de menor a mayor")}
       ${toggle("is_active", c ? c.is_active : true, "Visible en la web")}
+      ${c?.kind === "private" ? "" : `<fieldset class="stack" data-pay-toggle><legend>Formas de pago de la clase</legend>
+        ${toggle("pay_online", c ? c.pay_online : true, "Pagar ya online (un solo pago)")}
+        ${toggle("pay_subscription", c ? c.pay_subscription : false, "Suscripción mensual online")}
+        <div data-sub-price ${c?.pay_subscription ? "" : "hidden"}>${field("Cuota mensual por plaza (€)", input("monthly_price", eurosInput(c?.monthly_price_cents), 'inputmode="decimal"'), "Stripe cobra esta cuota cada mes en la tarjeta del cliente")}</div>
+        ${toggle("pay_in_person", c ? c.pay_in_person : true, "Pagar en el taller")}
+        <p class="muted" style="font-size:.82rem">El cliente elige entre las que dejes activas; si solo hay una, no se le pregunta. Con «en el taller» la plaza queda reservada y la marcas como cobrada en Reservas. Las suscripciones se reflejan solas: si no se cobra la cuota del mes, la reserva sale en «Por cobrar».</p></fieldset>`}
       <div class="row row--end">${c ? '<button class="btn btn--danger" type="button" data-delete>Borrar</button>' : ""}<button class="btn" type="submit">Guardar</button></div>
     </form>
     ${c?.kind === "group" ? `<h3>Foto (se ve al pasar el ratón)</h3>${c.image ? `<img src="${esc(c.image.thumb_url)}" alt="" style="width:120px;border-radius:4px;margin-bottom:1rem">` : ""}<div data-img>${uploadForm("class")}</div>` : ""}`);
   const form = $("[data-form]", body);
+  form.elements.pay_subscription?.addEventListener("change", (e) => { $("[data-sub-price]", form).hidden = !e.target.checked; });
   form.addEventListener("submit", (e) => {
     e.preventDefault();
     submitting(form, async () => {
@@ -503,6 +585,12 @@ function classForm(c) {
         capacity: Number(f.capacity.value), duration_minutes: Number(f.duration_minutes.value),
         sort_order: Number(f.sort_order.value || 0), is_active: f.is_active.checked,
       };
+      if (f.pay_in_person) {
+        data.pay_in_person = f.pay_in_person.checked;
+        data.pay_online = f.pay_online.checked;
+        data.pay_subscription = f.pay_subscription.checked;
+        data.monthly_price_cents = f.pay_subscription.checked ? toCents(f.monthly_price.value || "0") : null;
+      }
       if (!c) data.kind = f.kind.value;
       c ? await api("PATCH", `/admin/classes/${c.id}`, data) : await api("POST", "/admin/classes", data);
       toast("Clase guardada");
@@ -556,15 +644,15 @@ views.reservas = async () => {
   const q = state.bookingStatus ? `?status=${state.bookingStatus}` : "?upcoming=1";
   const list = (await api("GET", "/admin/bookings" + q)).filter((b) => state.bookingStatus || b.status !== "cancelled");
   main.innerHTML = `
-    <div class="page-head"><div><p class="eyebrow">Taller</p><h1>Reservas</h1><p>Las clases en grupo se confirman solas al pagar. Las privadas llegan como solicitud: escribe al cliente y confírmalas aquí.</p></div></div>
-    ${filters([["", "Próximas"], ["requested", "Solicitudes privadas"], ["confirmed", "Confirmadas"], ["pending_payment", "Pagando"], ["cancelled", "Canceladas"]], state.bookingStatus)}
+    <div class="page-head"><div><p class="eyebrow">Taller</p><h1>Reservas</h1><p>Las clases en grupo se confirman solas al pagar online, o al reservar si el cliente paga en el taller: márcalas como cobradas cuando te paguen. Las privadas llegan como solicitud: escribe al cliente y confírmalas aquí.</p></div></div>
+    ${filters([["", "Próximas"], ["requested", "Solicitudes privadas"], ["unpaid", "Por cobrar"], ["confirmed", "Confirmadas"], ["pending_payment", "Pagando"], ["cancelled", "Canceladas"]], state.bookingStatus)}
     <div class="table-wrap">${list.length ? `<table>
       <thead><tr><th>Clase</th><th>Fecha</th><th>Cliente</th><th class="num">Plazas</th><th>Estado</th><th class="num">Importe</th></tr></thead>
       <tbody>${list.map((b) => `<tr class="is-clickable" data-id="${b.id}">
         <td>${esc(b.class_title)}<br><span class="muted">${esc(b.reference)}</span></td>
         <td>${b.starts_at ? fmtDate(b.starts_at) : `${fmtDate(b.preferred_date, false)} · ${esc(b.preferred_slot)}<br><span class="muted">preferida</span>`}</td>
         <td>${esc(b.customer.name)}<br><span class="muted">${esc(b.customer.email)}</span></td>
-        <td class="num">${b.seats}</td><td>${badge(b.status)}</td><td class="num">${money(b.total_cents)}</td></tr>`).join("")}
+        <td class="num">${b.seats}</td><td>${badge(b.status)} ${payBadge(b)}</td><td class="num">${money(b.total_cents)}</td></tr>`).join("")}
       </tbody></table>` : '<p class="empty">No hay reservas aquí.</p>'}</div>`;
   $("[data-filters]").addEventListener("click", (e) => { const b = e.target.closest("button"); if (b) { state.bookingStatus = b.dataset.value; views.reservas().catch(fail); } });
   $$("tr[data-id]").forEach((tr) => tr.addEventListener("click", () => bookingForm(list.find((b) => b.id === Number(tr.dataset.id)))));
@@ -573,10 +661,10 @@ views.reservas = async () => {
 function bookingForm(b) {
   const isPrivate = !b.session_id;
   const body = openDrawer(`Reserva ${b.reference}`, `
-    <div class="row">${badge(b.status)}<span class="muted">creada ${fmtDate(b.created_at)}</span>${b.privacy_blocked ? '<span class="badge">Datos bloqueados · RGPD</span>' : ""}</div>
+    <div class="row">${badge(b.status)}${payBadge(b)}<span class="muted">creada ${fmtDate(b.created_at)}</span>${b.privacy_blocked ? '<span class="badge">Datos bloqueados · RGPD</span>' : ""}</div>
     <h3>${esc(b.class_title)}</h3>
     <dl><dt>Cliente</dt><dd>${esc(b.customer.name)}</dd><dt>Email</dt><dd><a href="mailto:${esc(b.customer.email)}">${esc(b.customer.email)}</a></dd><dt>Teléfono</dt><dd>${esc(b.customer.phone) || "—"}</dd>
-      <dt>Plazas</dt><dd>${b.seats}</dd><dt>Importe</dt><dd>${money(b.total_cents)} ${b.paid_at ? "· pagado" : isPrivate ? "· se cobra en el estudio o por enlace" : ""}</dd>
+      <dt>Plazas</dt><dd>${b.seats}</dd><dt>Importe</dt><dd>${money(b.total_cents)} ${b.payment_method === "subscription" ? `al mes · suscripción ${{ active: "activa", past_due: "con la cuota sin pagar", canceled: "cancelada" }[b.subscription_status] || ""}${b.paid_until ? ` · pagada hasta el ${fmtDate(b.paid_until, false)}` : ""}` : b.paid_at ? `· pagado ${b.payment_method === "in_person" ? "en el taller" : "online"} el ${fmtDate(b.paid_at, false)}` : b.payment_method === "in_person" ? "· se paga en el taller" : ""}</dd>
       ${isPrivate ? `<dt>Preferencia</dt><dd>${fmtDate(b.preferred_date, false)} · ${esc(b.preferred_slot)}</dd>` : `<dt>Horario</dt><dd>${fmtDate(b.starts_at)}</dd>`}</dl>
     <form class="stack" data-form style="margin-top:1.5rem">
       ${isPrivate ? field("Fecha y hora acordadas", input("starts_at", b.starts_at ? b.starts_at.slice(0, 16).replace(" ", "T") : "", 'type="datetime-local"')) : ""}
@@ -584,10 +672,12 @@ function bookingForm(b) {
       <div class="row row--end">
         ${b.status !== "cancelled" ? '<button class="btn btn--danger" type="button" data-status="cancelled">Cancelar reserva</button>' : ""}
         ${isPrivate && b.status === "requested" ? '<button class="btn btn--ghost" type="button" data-status="confirmed">Confirmar</button>' : ""}
+        ${inPersonUnpaid(b) ? '<button class="btn btn--ghost" type="button" data-paid="1">Marcar como cobrada</button>' : ""}
+        ${b.payment_method === "in_person" && b.paid_at && b.status !== "cancelled" ? '<button class="btn btn--ghost" type="button" data-paid="0">Deshacer cobro</button>' : ""}
         <button class="btn" type="submit">Guardar</button>
       </div>
     </form>
-    ${b.paid_at && b.status !== "cancelled" ? '<p class="muted" style="font-size:.82rem;margin-top:1rem">Si cancelas una reserva pagada, haz el reembolso desde Stripe.</p>' : ""}`);
+    ${b.paid_at && b.status !== "cancelled" ? `<p class="muted" style="font-size:.82rem;margin-top:1rem">${b.payment_method === "in_person" ? "Si cancelas una reserva ya cobrada, devuelve el dinero en el taller." : b.payment_method === "subscription" ? "Cancelar la reserva no da de baja la suscripción: cancélala también en Stripe → Suscripciones." : "Si cancelas una reserva pagada, haz el reembolso desde Stripe."}</p>` : ""}`);
   const form = $("[data-form]", body);
   const save = (extra = {}) => submitting(form, async () => {
     const data = { notes: form.elements.notes.value, ...extra };
@@ -600,6 +690,122 @@ function bookingForm(b) {
     if (btn.dataset.status === "cancelled" && !confirm("¿Cancelar la reserva? Las plazas quedarán libres.")) return;
     save({ status: btn.dataset.status });
   }));
+  $$("[data-paid]", body).forEach((btn) => btn.addEventListener("click", () => save({ paid: btn.dataset.paid === "1" })));
+}
+
+/* ---------- Calendario de reservas ---------- */
+const ymd = (d) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+const BILLING = { single: "Pago único", subscription: "Suscripción" };
+const setOverdue = (n) => $$("[data-overdue]").forEach((el) => { el.textContent = n > 99 ? "99+" : String(n); el.hidden = !n; });
+const refreshOverdue = () => api("GET", "/admin/stats").then((s) => setOverdue(s.payments_overdue)).catch(() => {});
+// Estado de cobro de una entrada del calendario (null = no se puede saber, mes pasado de una suscripción)
+const entryPay = (e) => e.paid === null ? "" : e.paid ? '<span class="badge badge--ok">Pagada</span>' : '<span class="badge badge--warn">Sin pagar</span>';
+
+views.calendario = async () => {
+  const today = new Date();
+  state.calMonth ||= new Date(today.getFullYear(), today.getMonth(), 1);
+  state.calDay ||= ymd(today);
+  const first = state.calMonth;
+  const offset = (first.getDay() + 6) % 7; // semana desde el lunes
+  const start = new Date(first.getFullYear(), first.getMonth(), 1 - offset);
+  const end = new Date(start.getFullYear(), start.getMonth(), start.getDate() + 41);
+  const [entries, alerts] = await Promise.all([
+    api("GET", `/admin/calendar?from=${ymd(start)}&to=${ymd(end)}`),
+    api("GET", "/admin/payment-alerts"),
+  ]);
+  setOverdue(alerts.length);
+  const byDay = {};
+  entries.forEach((e) => (byDay[e.date] ||= []).push(e));
+  const cells = Array.from({ length: 42 }, (_, i) => {
+    const d = new Date(start.getFullYear(), start.getMonth(), start.getDate() + i);
+    const key = ymd(d), list = byDay[key] || [];
+    const unpaid = list.some((e) => e.paid === false);
+    return `<button type="button" class="cal__day${d.getMonth() !== first.getMonth() ? " is-out" : ""}${key === ymd(today) ? " is-today" : ""}" data-day="${key}" aria-pressed="${key === state.calDay}">
+      <span>${d.getDate()}</span>${list.length ? `<small class="cal__n${unpaid ? " is-unpaid" : ""}">${list.length} ${list.length === 1 ? "reserva" : "reservas"}</small>` : ""}</button>`;
+  }).join("");
+  const dayList = byDay[state.calDay] || [];
+  main.innerHTML = `
+    <div class="page-head"><div><p class="eyebrow">Taller</p><h1>Calendario</h1><p>Las reservas de cada día. Añade las que te lleguen por fuera de la web e indica si es pago único o suscripción mensual y si ya está pagada. Las cuotas se cobran a principios de mes: si pasa la primera semana sin cobrar, aparece aquí un aviso (y te llega un email si el correo está configurado).</p></div>
+      <button class="btn" data-add>Añadir reserva</button></div>
+    ${alerts.length ? `<div class="notice"><strong>${alerts.length} ${alerts.length === 1 ? "cobro pendiente" : "cobros pendientes"}</strong>
+      <ul class="alert-list">${alerts.map((b) => `<li><button class="link-btn" data-alert="${b.id}">${esc(b.customer.name || "Sin nombre")}</button> · ${esc(b.class_title)} · ${BILLING[b.billing_type]} · ${money(b.total_cents)}
+        <button class="link-btn" data-pay="${b.id}">Marcar cobrada</button></li>`).join("")}</ul></div>` : ""}
+    <div class="cal__head">
+      <button class="btn btn--ghost" data-month="-1" aria-label="Mes anterior">←</button>
+      <h2 class="cal__title">${first.toLocaleDateString("es-ES", { month: "long", year: "numeric" })}</h2>
+      <button class="btn btn--ghost" data-month="1" aria-label="Mes siguiente">→</button>
+      <button class="btn btn--ghost" data-today>Hoy</button>
+    </div>
+    <div class="cal">${["L", "M", "X", "J", "V", "S", "D"].map((w) => `<span class="cal__wd">${w}</span>`).join("")}${cells}</div>
+    <h2 style="font-size:1.5rem;margin:2rem 0 1rem">${fmtDate(state.calDay + " 00:00:00", false)}</h2>
+    ${dayList.length ? `<div class="table-wrap"><table><tbody>${dayList.map((e, i) => `<tr class="is-clickable" data-entry="${i}">
+      <td>${e.time}</td><td>${esc(e.booking.class_title)}<br><span class="muted">${esc(e.booking.customer.name)}${e.booking.seats > 1 ? ` · ${e.booking.seats} plazas` : ""}</span></td>
+      <td>${BILLING[e.booking.billing_type]}${e.recurring ? ' <span class="muted">· cada semana</span>' : ""}</td><td>${entryPay(e)}</td><td class="num">${money(e.booking.total_cents)}</td></tr>`).join("")}</tbody></table></div>`
+      : '<p class="empty">No hay reservas este día.</p>'}`;
+  const again = () => views.calendario().catch(fail);
+  $$("[data-month]").forEach((b) => b.addEventListener("click", () => { state.calMonth = new Date(first.getFullYear(), first.getMonth() + Number(b.dataset.month), 1); again(); }));
+  $("[data-today]").addEventListener("click", () => { state.calMonth = new Date(today.getFullYear(), today.getMonth(), 1); state.calDay = ymd(today); again(); });
+  $$("[data-day]").forEach((b) => b.addEventListener("click", () => { state.calDay = b.dataset.day; again(); }));
+  $("[data-add]").addEventListener("click", () => calendarBookingForm(state.calDay, again));
+  $$("[data-entry]").forEach((tr) => tr.addEventListener("click", () => calendarEntryForm(dayList[Number(tr.dataset.entry)], again)));
+  $$("[data-alert]").forEach((b) => b.addEventListener("click", () => calendarEntryForm({ booking: alerts.find((x) => x.id === Number(b.dataset.alert)), recurring: false, paid: false }, again)));
+  $$("[data-pay]").forEach((b) => b.addEventListener("click", async () => {
+    try { await api("PATCH", `/admin/bookings/${b.dataset.pay}`, { paid: true }); toast("Cobro anotado"); again(); } catch (e) { fail(e); }
+  }));
+};
+
+function calendarEntryForm(e, done) {
+  const b = e.booking, sub = b.billing_type === "subscription";
+  const body = openDrawer(`Reserva ${b.reference}`, `
+    <div class="row">${badge(b.status)} <span class="badge badge--ink">${BILLING[b.billing_type]}</span> ${entryPay(e)}</div>
+    <h3>${esc(b.class_title)}</h3>
+    <dl><dt>Cliente</dt><dd>${esc(b.customer.name)}</dd><dt>Contacto</dt><dd>${esc([b.customer.phone, b.customer.email].filter(Boolean).join(" · ")) || "—"}</dd>
+      <dt>${sub ? "Empieza" : "Fecha"}</dt><dd>${fmtDate(b.starts_at)}</dd><dt>${sub ? "Cuota mensual" : "Importe"}</dt><dd>${money(b.total_cents)}${b.seats > 1 ? ` · ${b.seats} plazas` : ""}</dd>
+      ${sub ? `<dt>Último cobro</dt><dd>${b.paid_at ? fmtDate(b.paid_at, false) : "—"}</dd>` : ""}
+      ${b.notes ? `<dt>Notas</dt><dd>${esc(b.notes)}</dd>` : ""}</dl>
+    <div class="row row--end" style="margin-top:1.5rem">
+      ${b.status !== "cancelled" ? `<button class="btn btn--danger" type="button" data-cancel>${sub ? "Dar de baja" : "Cancelar reserva"}</button>` : ""}
+      ${b.payment_method === "in_person" && b.status !== "cancelled" ? (e.paid ? `<button class="btn btn--ghost" type="button" data-paid="0">Deshacer cobro</button>` : `<button class="btn" type="button" data-paid="1">${sub ? "Marcar cuota cobrada" : "Marcar como cobrada"}</button>`) : ""}
+    </div>
+    ${sub ? '<p class="muted" style="font-size:.82rem;margin-top:1rem">La suscripción sale cada semana, el mismo día y hora, hasta que la des de baja. «Cobrada» vale para el mes en curso.</p>' : ""}`);
+  const patch = async (data, msg) => { try { await api("PATCH", `/admin/bookings/${b.id}`, data); toast(msg); closeDrawer(); done(); } catch (err) { fail(err); } };
+  $$("[data-paid]", body).forEach((btn) => btn.addEventListener("click", () => patch({ paid: btn.dataset.paid === "1" }, "Reserva actualizada")));
+  $("[data-cancel]", body)?.addEventListener("click", () => { if (confirm(sub ? "¿Dar de baja la suscripción?" : "¿Cancelar la reserva?")) patch({ status: "cancelled" }, "Reserva cancelada"); });
+}
+
+async function calendarBookingForm(day, done) {
+  const classes = (await api("GET", "/admin/classes")).filter((c) => c.kind === "group");
+  const body = openDrawer("Añadir reserva", `
+    <form class="stack" data-form>
+      ${field("Nombre", input("customer_name", "", "required"))}
+      <div class="grid-2">${field("Teléfono", input("customer_phone", "", 'type="tel"'))}${field("Email (opcional)", input("customer_email", "", 'type="email"'))}</div>
+      ${field("Clase", `<select name="class_id"><option value="">Otra (escribe el nombre)</option>${classes.map((c) => `<option value="${c.id}" data-price="${c.price_cents}">${esc(c.title)}</option>`).join("")}</select>`)}
+      <div data-title-field>${field("Nombre de la clase", input("class_title"))}</div>
+      <div class="grid-2">${field("Fecha y hora", input("starts_at", `${day}T18:00`, 'type="datetime-local" required'))}${field("Plazas", input("seats", "1", 'type="number" min="1" max="100"'))}</div>
+      ${field("Tipo de pago", `<select name="billing_type"><option value="single">Pago único</option><option value="subscription">Suscripción mensual</option></select>`, "La suscripción se repite cada semana en el calendario y se cobra una vez al mes.")}
+      ${field("Importe (€)", input("price", "", 'inputmode="decimal" placeholder="Pago único o cuota mensual"'))}
+      ${toggle("paid", false, "Ya está pagada")}
+      ${field("Notas internas", '<textarea name="notes"></textarea>')}
+      <div class="row row--end"><button class="btn" type="submit">Guardar reserva</button></div>
+    </form>`);
+  const form = $("[data-form]", body), f = form.elements;
+  f.class_id.addEventListener("change", () => {
+    const opt = f.class_id.selectedOptions[0];
+    $("[data-title-field]", body).hidden = !!f.class_id.value;
+    if (f.class_id.value && !f.price.value) f.price.value = eurosInput(Number(opt.dataset.price));
+  });
+  form.addEventListener("submit", (e) => {
+    e.preventDefault();
+    submitting(form, async () => {
+      await api("POST", "/admin/bookings", {
+        customer_name: f.customer_name.value, customer_phone: f.customer_phone.value, customer_email: f.customer_email.value,
+        class_id: f.class_id.value ? Number(f.class_id.value) : null, class_title: f.class_title.value,
+        starts_at: f.starts_at.value, seats: Number(f.seats.value) || 1, billing_type: f.billing_type.value,
+        total_cents: f.price.value ? toCents(f.price.value) : 0, paid: f.paid.checked, notes: f.notes.value,
+      });
+      toast("Reserva añadida"); closeDrawer(); done();
+    });
+  });
 }
 
 /* ---------- Galería ---------- */
@@ -875,6 +1081,12 @@ views.ajustes = async () => {
       </section>
 
       <section class="stack">
+        <h2 class="settings__title">Tienda</h2>
+        ${toggle("SHOP_OPEN", v.SHOP_OPEN !== "false", "Tienda abierta (compra y cesta activas)")}
+        ${field("Aviso cuando está cerrada", input("SHOP_CLOSED_MESSAGE", v.SHOP_CLOSED_MESSAGE, 'placeholder="No disponible en estos momentos"'), "Se ve en la tienda y en las fichas. Los pedidos ya pagados no cambian.")}
+      </section>
+
+      <section class="stack">
         <h2 class="settings__title">Opciones de envío</h2>
         ${toggle("SHIPPING_PICKUP", v.SHIPPING_PICKUP !== "false", "Ofrecer recogida gratis en el estudio")}
         <div class="grid-2">
@@ -968,7 +1180,7 @@ async function route() {
   const view = views[name] || views.resumen;
   $$("[data-nav] a").forEach((a) => a.toggleAttribute("aria-current", a.getAttribute("href") === `#${name}`));
   $$("[data-nav] a[aria-current]").forEach((a) => a.setAttribute("aria-current", "page"));
-  $("[data-menu-current]").textContent = $("[data-nav] a[aria-current]")?.textContent || "Menú";
+  $("[data-menu-current]").textContent = $("[data-nav] a[aria-current]")?.firstChild.textContent.trim() || "Menú";
   toggleMenu(false);
   closeDrawer();
   main.innerHTML = '<p class="muted">Cargando…</p>';
@@ -990,6 +1202,8 @@ async function showApp() {
   $("[data-view-login]").hidden = true;
   $("[data-view-app]").hidden = false;
   if (!imageRules) api("GET", "/admin/image-rules").then((r) => { imageRules = r; }).catch(() => {});
+  refreshUnread();
+  refreshOverdue();
   route();
 }
 
@@ -1047,6 +1261,9 @@ if ("serviceWorker" in navigator && (location.protocol === "https:" || location.
 }
 
 window.addEventListener("hashchange", () => { if (token) route(); });
+// Mensajes nuevos: se mira cada minuto mientras el panel está a la vista
+setInterval(() => { if (token && !document.hidden && !$("[data-view-app]").hidden) refreshUnread(); }, 60000);
+document.addEventListener("visibilitychange", () => { if (token && !document.hidden && !$("[data-view-app]").hidden) refreshUnread(); });
 // Primera visita sin instalar: al instalador
 fetch(`${API}/health`).then((r) => r.json()).then((j) => {
   if (j.data?.installed === false) location.replace("setup.html");
