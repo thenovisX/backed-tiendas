@@ -253,6 +253,8 @@ Productos visibles, del más nuevo al más antiguo.
   "price_cents": 7200, "discount_percent": 20, "final_price_cents": 5760,
   "sold_out": false, "low_stock": true,
   "images": [ { "id": 2, "url": "/uploads/product/2026/10/ab12.webp", "thumb_url": "/uploads/product/2026/10/ab12-thumb.webp", "width": 1280, "height": 1600, "alt": "Jarrón de cerámica" } ],
+  "dimensions": "Ø 12 × 28 cm", "material": "Gres", "care": "Lavar a mano.",
+  "specs": [ { "label": "Capacidad", "value": "1 l" } ],
   "created_at": "2026-10-18 10:00:00"
 } ] }
 ```
@@ -394,13 +396,14 @@ Mientras no hay base de datos configurada (o faltan las tablas), el resto de rut
 | `POST /admin/settings/test` | `{ "service": "stripe" }` o `"packlink"` | `{ "ok": true, "message": "Conectado con Stripe · …" }` · `502` si la clave no funciona |
 | `GET /admin/stats` | — | Pedidos por enviar/recoger, ventas 30 días, solicitudes privadas, stock bajo, si Stripe/Packlink están configurados |
 | `GET /admin/products` | — | Lista con campos internos: `stock`, `held` (en pago), `sold_out_manual`, `is_active`, peso y medidas |
-| `POST /admin/products` | `title`*, `price_cents`*, `description`, `category`, `discount_percent` (0–90), `stock`, `sold_out`, `is_active`, `weight_grams`, `length_cm`, `width_cm`, `height_cm`, `slug` | `201` producto |
+| `POST /admin/products` | `title`*, `price_cents`*, `description`, `category`, `discount_percent` (0–90), `stock`, `sold_out`, `is_active`, `weight_grams`, `length_cm`, `width_cm`, `height_cm` (paquete, para el envío), `dimensions` (medidas de la pieza, texto), `material`, `care` (cuidados), `specs` (`[{"label":"Capacidad","value":"350 ml"}]`, máx. 20; filas vacías se descartan), `slug` | `201` producto |
 | `GET /admin/products/{id}` | — | Producto |
 | `PUT`/`PATCH /admin/products/{id}` | Cualquier campo anterior (solo cambia lo enviado) | Producto |
 | `PATCH /admin/products/{id}/sold-out` | `{ "sold_out": true }` | Producto (interruptor “Agotado”) |
 | `DELETE /admin/products/{id}` | — | `204` (los pedidos antiguos conservan título y precio) |
 | `POST /admin/products/{id}/images` | multipart: `image`*, `alt`, `crop=1` | `201` producto con imágenes |
 | `PUT /admin/products/{id}/images` | `{ "ids": [3, 1] }` (la primera es la portada) | Producto |
+| `PATCH /admin/products/{id}/images/{imageId}` | `{ "alt": "…" }` texto alternativo | Producto |
 | `DELETE /admin/products/{id}/images/{imageId}` | — | Producto |
 | `GET /admin/classes` | — | Todas las clases con todos sus horarios (también pasados y cancelados) |
 | `POST /admin/classes` | `title`*, `kind`* (`group`/`private`), `price_cents`*, `description`, `duration_minutes`, `capacity`, `is_active`, `sort_order` | `201` clase |
@@ -484,7 +487,7 @@ curl -X POST https://tudominio.com/api/admin/gallery \
 - **`WebhookController`**: `stripe`.
 - **`AuthController`**: `login`, `logout`, `me`, `changePassword`, `setup`, `setupStatus`.
 - **`Admin\SettingsController`**: `show`, `update`, `test`.
-- **`Admin\ProductAdminController`**: `index`, `show`, `store`, `update`, `soldOut`, `destroy`, `uploadImage`, `reorderImages`, `deleteImage`.
+- **`Admin\ProductAdminController`**: `index`, `show`, `store`, `update`, `soldOut`, `destroy`, `uploadImage`, `reorderImages`, `updateImage`, `deleteImage`.
 - **`Admin\ClassAdminController`**: `index`, `store`, `update`, `destroy`, `uploadImage`, `storeSession`, `updateSession`, `destroySession`, `bookings`, `updateBooking`.
 - **`Admin\GalleryAdminController`**: `index`, `rules`, `store`, `update`, `reorder`, `destroy`.
 - **`Admin\OrderAdminController`**: `index`, `show`, `update`, `packlink`, `customers`, `stats`.
