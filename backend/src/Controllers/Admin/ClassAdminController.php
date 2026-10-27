@@ -10,6 +10,7 @@ use App\Http\Response;
 use App\Services\Catalog;
 use App\Services\ImageProcessor;
 use App\Services\Messages;
+use App\Services\WeeklySchedule;
 use App\Validator;
 
 /** Clases, horarios (sesiones) y precios desde el panel. */
@@ -77,6 +78,7 @@ final class ClassAdminController
 
     public function index(Request $r): Response
     {
+        WeeklySchedule::sync();
         $rows = Database::get()->all('SELECT * FROM classes ORDER BY kind, sort_order, id');
         return Response::json(Catalog::classes($rows, true));
     }
