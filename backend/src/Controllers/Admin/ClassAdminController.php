@@ -10,6 +10,7 @@ use App\Http\Response;
 use App\Services\Catalog;
 use App\Services\ImageProcessor;
 use App\Services\Messages;
+use App\Services\WeeklySchedule;
 use App\Validator;
 
 /** Clases, horarios (sesiones) y precios desde el panel. */
@@ -44,6 +45,8 @@ final class ClassAdminController
             'pay_subscription' => ($b = $v->bool('pay_subscription')) === null ? null : (int) $b,
             'monthly_price_cents' => $v->has('monthly_price_cents') && ($body['monthly_price_cents'] === null || $body['monthly_price_cents'] === '')
                 ? null : $v->int('monthly_price_cents', false, 0, 10_000_000),
+            'price_period' => $v->enum('price_period', ['session', 'month'], false) ?: null,
+            'show_date' => ($b = $v->bool('show_date')) === null ? null : (int) $b,
             'is_active' => ($b = $v->bool('is_active')) === null ? null : (int) $b,
             'sort_order' => $v->int('sort_order', false, -1000, 1000),
         ], static fn ($x) => $x !== null);
@@ -75,6 +78,7 @@ final class ClassAdminController
 
     public function index(Request $r): Response
     {
+        WeeklySchedule::sync();
         $rows = Database::get()->all('SELECT * FROM classes ORDER BY kind, sort_order, id');
         return Response::json(Catalog::classes($rows, true));
     }

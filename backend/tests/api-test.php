@@ -3,7 +3,8 @@
  * Test de extremo a extremo de la API contra una base de datos de pruebas.
  * Ver "Tests" en el README:
  *   php backend/tests/api-test.php http://127.0.0.1:8000 whsec_test
- * Requiere el servidor de desarrollo con STRIPE_API_BASE apuntando a mock-stripe.php.
+ * Requiere el servidor de desarrollo con STRIPE_API_BASE apuntando a mock-stripe.php
+ * y mock-smtp.php escuchando en el puerto 2525 (6.º argumento para cambiarlo).
  * ¡No lo ejecutes contra la base de datos real! Crea y borra datos.
  */
 declare(strict_types=1);
@@ -128,6 +129,26 @@ call('PUT', "$base/admin/settings", ['values' => ['SHOP_OPEN' => true, 'SHOP_CLO
 [, $site] = call('GET', "$base/site");
 check('tienda reabierta desde el panel', $site['data']['shop_open'] === true, $site);
 
+echo "Correo (Gmail / SMTP)\n";
+[$s, $j] = call('PUT', "$base/admin/settings", ['values' => ['MAIL_PROVIDER' => 'outlook', 'SMTP_PORT' => '80', 'SMTP_HOST' => 'no valido']], $token);
+check('correo: rechaza proveedor, puerto y servidor no válidos', $s === 422 && isset($j['error']['fields']['MAIL_PROVIDER'], $j['error']['fields']['SMTP_PORT'], $j['error']['fields']['SMTP_HOST']), $j);
+[$s, $j] = call('PUT', "$base/admin/settings", ['values' => ['MAIL_PROVIDER' => 'gmail', 'MAIL_FROM' => 'tienda.test@gmail.com', 'SMTP_PASS' => 'abcd efgh ijkl mnop']], $token);
+check('correo: Gmail guardado, contraseña de aplicación sin espacios y sin devolverla', $s === 200 && $j['data']['mail_provider'] === 'gmail'
+    && $j['data']['secrets']['SMTP_PASS']['set'] && $j['data']['secrets']['SMTP_PASS']['hint'] === '…mnop' && !str_contains(json_encode($j), 'abcdefgh'), $j);
+$smtpPort = $argv[6] ?? '2525';
+$smtpFile = sys_get_temp_dir() . '/tienda-mock-smtp.txt';
+@unlink($smtpFile);
+call('PUT', "$base/admin/settings", ['values' => ['MAIL_PROVIDER' => 'smtp', 'SMTP_HOST' => '127.0.0.1', 'SMTP_PORT' => $smtpPort, 'SMTP_PASS' => 'mala-clave-123', 'MAIL_ADMIN' => 'avisos@tienda.test']], $token);
+[$s, $j] = call('POST', "$base/admin/settings/test", ['service' => 'mail'], $token);
+check('correo de prueba: contraseña rechazada se explica', $s === 502 && str_contains($j['error']['message'] ?? '', 'contraseña de aplicación'), $j);
+call('PUT', "$base/admin/settings", ['values' => ['SMTP_PASS' => 'abcdefghijklmnop', 'MAIL_FROM_NAME' => 'Tienda Cerámica']], $token);
+[$s, $j] = call('POST', "$base/admin/settings/test", ['service' => 'mail'], $token);
+$sent = (string) @file_get_contents($smtpFile);
+check('correo de prueba enviado por SMTP al buzón de avisos', $s === 200 && str_contains($sent, 'RCPT TO:<avisos@tienda.test>') && str_contains($sent, 'From: =?UTF-8?B?' . base64_encode('Tienda Cerámica') . '?= <tienda.test@gmail.com>'), [$j, $sent]);
+call('PUT', "$base/admin/settings", ['values' => ['MAIL_PROVIDER' => '', 'MAIL_FROM' => '', 'MAIL_FROM_NAME' => '', 'MAIL_ADMIN' => '', 'SMTP_HOST' => '', 'SMTP_PORT' => ''], 'clear' => ['SMTP_PASS']], $token);
+[, $j] = call('GET', "$base/admin/settings", null, $token);
+check('correo: ajustes borrados vuelven al envío del hosting', $j['data']['mail_provider'] === 'hosting' && !$j['data']['secrets']['SMTP_PASS']['set'], $j);
+
 echo "Productos (panel)\n";
 [$s, $j] = call('POST', "$base/admin/products", ['title' => 'Test Cuenco', 'price_cents' => 5000, 'discount_percent' => 15, 'stock' => 2, 'category' => 'Test', 'weight_grams' => 500], $token);
 $pid = $j['data']['id'] ?? 0;
@@ -137,6 +158,8 @@ check('validación de producto (422 con campos)', $s === 422 && isset($j['error'
 [$s, $j] = call('PATCH', "$base/admin/products/$pid", ['description' => 'Editado', 'price_cents' => 6000], $token);
 check('editar producto', $s === 200 && $j['data']['description'] === 'Editado' && $j['data']['final_price_cents'] === 5100, $j);
 [$s, $j] = call('PATCH', "$base/admin/products/$pid", ['dimensions' => 'Ø 14 × 7 cm', 'material' => 'Gres', 'care' => 'Lavar a mano', 'specs' => [['label' => 'Capacidad', 'value' => '450 ml'], ['label' => '', 'value' => '']]], $token);
+[$s2, $j2] = call('PATCH', "$base/admin/products/$pid", ['piece_height_mm' => 70, 'piece_diameter_mm' => 140, 'piece_capacity_ml' => 450], $token);
+check('ficha: medidas de la pieza en campos separados', $s2 === 200 && $j2['data']['measures'] === ['height_mm' => 70, 'width_mm' => 0, 'depth_mm' => 0, 'diameter_mm' => 140, 'capacity_ml' => 450], $j2);
 check('ficha: medidas, material, cuidados y especificaciones (las filas vacías se descartan)', $s === 200 && $j['data']['material'] === 'Gres' && $j['data']['specs'] === [['label' => 'Capacidad', 'value' => '450 ml']], $j);
 [$s, $j] = call('PATCH', "$base/admin/products/$pid", ['specs' => [['label' => 'Capacidad', 'value' => '']]], $token);
 check('especificación a medias rechazada', $s === 422 && isset($j['error']['fields']['specs.0']), $j);
@@ -369,6 +392,11 @@ check('apagar «se puede pagar en el taller» en la clase', $s === 200 && $j['da
 [$s, $j] = call('POST', "$base/bookings", array_merge($nora, ['seats' => 1]));
 check('…y ya no deja reservar sin pagar online', $s === 422 && isset($j['error']['fields']['payment_method']), $j);
 call('PATCH', "$base/admin/classes/$cid", ['pay_in_person' => true], $token);
+[$s, $j] = call('PATCH', "$base/admin/classes/$cid", ['price_period' => 'month', 'show_date' => false], $token);
+check('clase: precio «por mes» y sin fecha en la web', $s === 200 && $j['data']['price_period'] === 'month' && $j['data']['show_date'] === false, $j);
+[$s, $j] = call('PATCH', "$base/admin/classes/$cid", ['price_period' => 'semana'], $token);
+check('clase: el periodo del precio solo admite session o month', $s === 422 && isset($j['error']['fields']['price_period']), $j);
+call('PATCH', "$base/admin/classes/$cid", ['price_period' => 'session', 'show_date' => true], $token);
 [$s, $j] = call('POST', "$base/admin/customers/erase", ['email' => 'nora@example.com'], $token);
 [, $b] = call('GET', "$base/admin/bookings?session_id=$sid2", null, $token);
 check('RGPD: borrar libera la plaza sin pagar del taller', $s === 200 && ($b['data'][0]['status'] ?? '') === 'cancelled', $b);
@@ -556,6 +584,62 @@ check('resumen: cuenta los cobros atrasados', is_int($j['data']['payments_overdu
 foreach ([$single, $sub, $past] as $b) {
     call('PATCH', "$base/admin/bookings/{$b['id']}", ['status' => 'cancelled'], $token);
 }
+
+echo "Clases semanales\n";
+[$s, $j] = call('POST', "$base/admin/classes", ['title' => 'Torno semanal test', 'kind' => 'group', 'price_cents' => 2000, 'capacity' => 4, 'pay_subscription' => true, 'monthly_price_cents' => 5000], $token);
+$wcid = $j['data']['id'] ?? 0;
+$week = fn (array $days) => call('PUT', "$base/admin/weekly", ['days' => $days], $token);
+[$s, $j] = $week([['weekday' => 2, 'is_open' => true, 'slots' => [['class_id' => $wcid, 'time' => '25:00']]]]);
+check('semanales: rechaza una hora mal escrita', $s === 422 && isset($j['error']['fields']['days.0.slots.0.time']), $j);
+[$s, $j] = $week([
+    ['weekday' => 1, 'is_open' => false, 'slots' => [['class_id' => $wcid, 'time' => '11:00']]],
+    ['weekday' => 2, 'is_open' => true, 'slots' => [
+        ['class_id' => $wcid, 'time' => '18:00', 'price_cents' => 2500, 'price_period' => 'session'],
+        ['class_id' => $wcid, 'time' => '10:00', 'price_cents' => 6000, 'price_period' => 'month', 'capacity' => 2],
+    ]],
+]);
+$tue = $j['data']['days'][1] ?? [];
+check('semanales: guardar lunes apagado y martes con dos horas', $s === 200 && $j['data']['days'][0]['is_open'] === false && count($tue['slots'] ?? []) === 2 && $tue['slots'][0]['time'] === '10:00', $j);
+$slotEve = array_values(array_filter($tue['slots'] ?? [], fn ($x) => $x['time'] === '18:00'))[0]['id'] ?? 0;
+$slotMorning = array_values(array_filter($tue['slots'] ?? [], fn ($x) => $x['time'] === '10:00'))[0]['id'] ?? 0;
+call('GET', "$base/classes");
+[$s, $j] = call('GET', "$base/classes");
+$wc = array_values(array_filter($j['data']['group'] ?? [], fn ($c) => $c['id'] === $wcid))[0] ?? ['sessions' => []];
+$eve = array_values(array_filter($wc['sessions'], fn ($x) => $x['slot_id'] === $slotEve));
+$morning = array_values(array_filter($wc['sessions'], fn ($x) => $x['slot_id'] === $slotMorning));
+$webDays = array_column($j['data']['weekly'] ?? [], 'weekday');
+check('semanales: la web solo enseña los días encendidos', $webDays === [2] && count($j['data']['weekly'][0]['slots']) === 2, $j['data']['weekly'] ?? $j);
+check('semanales: crea las próximas 8 semanas una sola vez, en martes y a su hora', count($eve) === 8 && count($morning) === 8
+    && count(array_filter($eve, fn ($x) => date('N H:i', strtotime($x['starts_at'])) === '2 18:00')) === 8, $eve);
+check('semanales: precio y plazas propios en cada fecha', ($eve[0]['price_cents'] ?? 0) === 2500 && ($morning[0]['capacity'] ?? 0) === 2 && ($eve[0]['capacity'] ?? 0) === 4, [$eve[0] ?? null, $morning[0] ?? null]);
+[$s, $j] = call('POST', "$base/bookings", ['session_id' => $eve[0]['id'], 'seats' => 1, 'payment_method' => 'in_person', 'customer' => ['name' => 'Iria', 'email' => 'iria@example.com'], 'consents' => ['terms' => true]]);
+check('semanales: reservar la próxima fecha (en el taller, precio de esa hora)', $s === 201 && $j['data']['total_cents'] === 2500, $j);
+[$s, $j] = call('POST', "$base/bookings", ['session_id' => $morning[0]['id'], 'seats' => 1, 'payment_method' => 'subscription', 'customer' => ['name' => 'Iago', 'email' => 'iago@example.com'], 'consents' => ['terms' => true]]);
+check('semanales «por mes»: la suscripción cobra el precio de esa hora', $s === 201 && $j['data']['total_cents'] === 6000, $j);
+[$s, $j] = $week([['weekday' => 2, 'is_open' => true, 'slots' => [
+    ['id' => $slotEve, 'class_id' => $wcid, 'time' => '19:30', 'price_cents' => 2800],
+    ['id' => $slotMorning, 'class_id' => $wcid, 'time' => '10:00', 'price_cents' => 6000, 'price_period' => 'month', 'capacity' => 2],
+]]]);
+[, $jb] = call('GET', "$base/admin/bookings?session_id={$eve[0]['id']}", null, $token);
+[, $jc] = call('GET', "$base/classes");
+$wc = array_values(array_filter($jc['data']['group'] ?? [], fn ($c) => $c['id'] === $wcid))[0] ?? ['sessions' => []];
+$eve2 = array_values(array_filter($wc['sessions'], fn ($x) => $x['slot_id'] === $slotEve));
+check('semanales: cambiar la hora mueve las fechas y la reserva hecha', $s === 200 && str_ends_with((string) ($jb['data'][0]['starts_at'] ?? ''), '19:30:00')
+    && count($eve2) === 8 && $eve2[0]['id'] === $eve[0]['id'] && $eve2[0]['price_cents'] === 2800, [$jb, $eve2[0] ?? null]);
+[$s, $j] = $week([['weekday' => 2, 'is_open' => false, 'slots' => [
+    ['id' => $slotEve, 'class_id' => $wcid, 'time' => '19:30'],
+    ['id' => $slotMorning, 'class_id' => $wcid, 'time' => '10:00'],
+]]]);
+[, $jc] = call('GET', "$base/classes");
+$wc = array_values(array_filter($jc['data']['group'] ?? [], fn ($c) => $c['id'] === $wcid))[0] ?? ['sessions' => []];
+[, $jb] = call('GET', "$base/admin/bookings?session_id={$eve[0]['id']}", null, $token);
+check('semanales: apagar el día quita sus fechas y avisa de las que tenían reserva', $s === 200 && $j['data']['cancelled_with_bookings'] === 2
+    && ($jc['data']['weekly'] ?? null) === [] && $wc['sessions'] === [] && ($jb['data'][0]['status'] ?? '') === 'confirmed', [$j['data']['cancelled_with_bookings'] ?? null, $wc['sessions'], $jb]);
+[$s, $j] = $week([['weekday' => 2, 'is_open' => true, 'slots' => []]]);
+check('semanales: quitar todas las clases del día', $s === 200 && $j['data']['days'][1]['slots'] === [], $j);
+call('PATCH', "$base/admin/bookings/" . ($jb['data'][0]['id'] ?? 0), ['status' => 'cancelled'], $token);
+[$s] = call('DELETE', "$base/admin/classes/$wcid", null, $token);
+check('borrar la clase semanal', $s === 204);
 
 echo "Limpieza\n";
 [$s] = call('DELETE', "$base/admin/products/$pid", null, $token);

@@ -10,6 +10,7 @@ use App\Controllers\Admin\OrderAdminController as Orders;
 use App\Controllers\Admin\ProductAdminController as Products;
 use App\Controllers\Admin\ReviewAdminController as Reviews;
 use App\Controllers\Admin\SettingsController;
+use App\Controllers\Admin\WeeklyAdminController as Weekly;
 use App\Controllers\AuthController;
 use App\Controllers\BookingController;
 use App\Controllers\CheckoutController;
@@ -72,6 +73,8 @@ return static function (Router $r): void {
     $r->patch('/admin/classes/{id}', [Classes::class, 'update'], $admin);
     $r->delete('/admin/classes/{id}', [Classes::class, 'destroy'], $admin);
     $r->post('/admin/classes/{id}/image', [Classes::class, 'uploadImage'], $admin);
+    $r->get('/admin/weekly', [Weekly::class, 'show'], $admin);
+    $r->put('/admin/weekly', [Weekly::class, 'update'], $admin);
     $r->post('/admin/sessions', [Classes::class, 'storeSession'], $admin);
     $r->put('/admin/sessions/{id}', [Classes::class, 'updateSession'], $admin);
     $r->patch('/admin/sessions/{id}', [Classes::class, 'updateSession'], $admin);
