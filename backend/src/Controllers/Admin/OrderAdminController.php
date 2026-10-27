@@ -9,6 +9,7 @@ use App\Http\Request;
 use App\Http\Response;
 use App\Services\AppSettings;
 use App\Services\Fulfillment;
+use App\Services\Mailer;
 use App\Services\Messages;
 use App\Services\Packlink;
 use App\Services\PaymentAlerts;
@@ -143,6 +144,7 @@ final class OrderAdminController
                 $db->all('SELECT id, title, stock FROM products WHERE is_active = 1 AND sold_out = 0 AND stock <= 1 ORDER BY stock, title')),
             'payments_configured' => Stripe::isConfigured(),
             'packlink_configured' => Packlink::isConfigured(),
+            'mail_configured' => Mailer::canSend(),
             'legal_missing' => AppSettings::legalMissing(),
             'legacy_customers' => (int) $db->value('SELECT COUNT(*) FROM customers WHERE has_profile = 0 AND marketing_opt_in = 0'),
         ]);

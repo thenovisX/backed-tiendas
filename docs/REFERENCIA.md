@@ -161,6 +161,10 @@ Las marcadas con ⚙️ se pueden poner también (y mejor) en **Panel → Ajuste
 | `PACKLINK_CONTENT` | No | `Cerámica artesanal` | Descripción del contenido del paquete. |
 | `PACKLINK_SENDER_*` ⚙️ | Con Packlink | — | Remitente: `NAME`, `SURNAME`, `COMPANY`, `STREET`, `ZIP`, `CITY`, `COUNTRY`, `PHONE`, `EMAIL`. |
 | `MAIL_FROM` / `MAIL_ADMIN` ⚙️ | Recomendado | — | Remitente de los emails y buzón que recibe los avisos. |
+| `MAIL_PROVIDER` ⚙️ | No | `hosting` | `hosting` (mail() de PHP), `gmail` (smtp.gmail.com:465, usuario = `MAIL_FROM`, contraseña de aplicación de Google) o `smtp`. Panel → Ajustes → Correo, con botón «Enviar correo de prueba». |
+| `MAIL_FROM_NAME` ⚙️ | No | `SITE_NAME` | Nombre del remitente. |
+| `SMTP_HOST` / `SMTP_PORT` / `SMTP_USER` ⚙️ | Con `smtp` | — / `465` / `MAIL_FROM` | Servidor de salida. 465 = SSL; 587 = STARTTLS (nunca manda la contraseña sin cifrar). |
+| `SMTP_PASS` ⚙️ | Con `gmail` o `smtp` | — | Contraseña de aplicación de Google o del buzón. Se guarda cifrada. |
 | `MAIL_DISABLED` | No | `false` | Desactiva el envío de emails (útil en pruebas). |
 | `UPLOAD_MAX_MB` | No | `10` | Peso máximo de cada imagen subida. |
 | `UPLOADS_URL` | No | `/uploads` | URL pública de la carpeta de imágenes. |
@@ -402,7 +406,7 @@ Mientras no hay base de datos configurada (o faltan las tablas), el resto de rut
 |---|---|---|
 | `GET /admin/settings` | — | Ajustes del panel: `values` (remitente, envíos, emails), `secrets` (solo `set`, `hint` “…1234” y `source` panel/env, **nunca la clave**), `stripe_mode`, `webhook_url`, `webhook_events` |
 | `PUT /admin/settings` | `{ "values": { "STRIPE_SECRET_KEY": "sk_live_…", "SHIPPING_FLAT_CENTS": "690" }, "clear": ["PACKLINK_API_KEY"] }` | Igual que GET. Un secreto vacío no se cambia; un campo normal vacío vuelve al valor por defecto. `422` con `fields` si una clave no tiene el formato correcto |
-| `POST /admin/settings/test` | `{ "service": "stripe" }` o `"packlink"` | `{ "ok": true, "message": "Conectado con Stripe · …" }` · `502` si la clave no funciona |
+| `POST /admin/settings/test` | `{ "service": "stripe" }`, `"packlink"` o `"mail"` | `{ "ok": true, "message": "Conectado con Stripe · …" }` · `502` si la clave no funciona. `mail` manda un correo de prueba a `MAIL_ADMIN` (o al remitente) |
 | `GET /admin/stats` | — | Pedidos por enviar/recoger, ventas 30 días, solicitudes privadas, stock bajo, si Stripe/Packlink están configurados |
 | `GET /admin/products` | — | Lista con campos internos: `stock`, `held` (en pago), `sold_out_manual`, `is_active`, peso y medidas |
 | `POST /admin/products` | `title`*, `price_cents`*, `description`, `category`, `discount_percent` (0–90), `stock`, `sold_out`, `is_active`, `weight_grams`, `length_cm`, `width_cm`, `height_cm` (paquete, para el envío), `dimensions` (medidas de la pieza, texto), `material`, `care` (cuidados), `specs` (`[{"label":"Capacidad","value":"350 ml"}]`, máx. 20; filas vacías se descartan), `slug` | `201` producto |
@@ -492,7 +496,7 @@ curl -X POST https://tudominio.com/api/admin/gallery \
 - **`ImageProcessor`** · `store(archivo, tipo, alt, recortar)` valida, normaliza y guarda · `delete(id)` · `rules()`.
 - **`Customers`** · `validate` (bloque `customer`) · `upsert` (crea o actualiza por email).
 - **`Messages`** · `record(tipo, asunto, remitente, texto, reserva)` · `typeForReason(motivo)` · `unread()` · `handleBooking(id)` · `present`.
-- **`Mailer`** · `send`, `admin`, `money` · **`Log`** · `error`, `info` · **`Settings`** · `currency`, `appUrl`, `holdMinutes`, `uploadsUrl`, `reference(prefijo)`.
+- **`Mailer`** · `send`, `admin`, `test`, `provider`, `money` (elige `mail()` o `Smtp`) · **`Smtp`** · cliente SMTP mínimo (SSL/STARTTLS, AUTH LOGIN, errores explicados) · **`Log`** · `error`, `info` · **`Settings`** · `currency`, `appUrl`, `holdMinutes`, `uploadsUrl`, `reference(prefijo)`.
 - **`AppSettings`** · `boot` (carga los ajustes del panel en cada petición) · `forPanel` · `save(valores, borrar)` con validación por tipo · cifrado `sodium_crypto_secretbox` con `APP_KEY`.
 - **`Installer`** · `isInstalled` · `install(db, admin, seed)`: prueba MySQL, escribe el `.env` (permisos 600), crea tablas y el primer admin.
 
@@ -548,6 +552,7 @@ php -S localhost:8000 backend/dev-router.php
 # .env de pruebas con STRIPE_SECRET_KEY=sk_test_mock, STRIPE_WEBHOOK_SECRET=whsec_test,
 # STRIPE_API_BASE=http://127.0.0.1:8099 y MAIL_DISABLED=true
 php -S 127.0.0.1:8099 -t backend/tests backend/tests/mock-stripe.php &
+php backend/tests/mock-smtp.php 2525 &      # SMTP falso para el «correo de prueba»
 php -S 127.0.0.1:8000 backend/dev-router.php &
 php backend/tests/api-test.php http://127.0.0.1:8000 whsec_test http://127.0.0.1:8099 admin@email contraseña
 ```

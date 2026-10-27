@@ -123,6 +123,7 @@ Tests (crean y borran datos: usa una base de datos de pruebas). En el `.env` de 
 
 ```bash
 php -S 127.0.0.1:8099 -t backend/tests backend/tests/mock-stripe.php &
+php backend/tests/mock-smtp.php 2525 &      # SMTP falso para el «correo de prueba»
 php -S 127.0.0.1:8000 backend/dev-router.php &
 php backend/tests/api-test.php http://127.0.0.1:8000 whsec_test http://127.0.0.1:8099 admin@email contraseña
 ```
